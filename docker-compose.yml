@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nova_aurora_postgres
+    environment:
+      POSTGRES_DB: ${SQL_DB_NAME:-nova_aurora}
+      POSTGRES_USER: ${SQL_ADMIN_USER:-aurora_admin}
+      POSTGRES_PASSWORD: ${SQL_ADMIN_PASSWORD:-aurora_admin_pass}
+    ports:
+      - "5432:5432"
+    volumes:
+      - nova_aurora_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SQL_ADMIN_USER:-aurora_admin} -d ${SQL_DB_NAME:-nova_aurora}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: nova_aurora_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LAB_MODE: ${LAB_MODE:-true}
+      JWT_SECRET: ${JWT_SECRET:-nova-aurora-test-lab-secret-change-me}
+      SQL_HOST: postgres
+      SQL_DB_NAME: ${SQL_DB_NAME:-nova_aurora}
+      SQL_USER: ${SQL_ADMIN_USER:-aurora_admin}
+      SQL_PASSWORD: ${SQL_ADMIN_PASSWORD:-aurora_admin_pass}
+      SQL_ADMIN_USER: ${SQL_ADMIN_USER:-aurora_admin}
+      SQL_ADMIN_PASSWORD: ${SQL_ADMIN_PASSWORD:-aurora_admin_pass}
+
+volumes:
+  nova_aurora_pgdata:

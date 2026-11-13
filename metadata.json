@@ -1,0 +1,8 @@
+{
+  "name": "Nova Aurora Store Test Lab",
+  "description": "E-commerce completo de laboratório para prática de testes manuais e automatizados (Selenium, Playwright, Cypress e Postman) com perfis Administrador, PDV e Cliente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

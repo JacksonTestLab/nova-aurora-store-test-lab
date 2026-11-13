@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --na-primary: #4f46e5;
+  --na-primary-hover: #4338ca;
+  --na-secondary: #14b8a6;
+  --na-bg: #f8fafc;
+  --na-surface: #ffffff;
+  --na-border: #e2e8f0;
+  --na-text: #0f172a;
+  --na-muted: #64748b;
+  --na-radius: 0.75rem;
+}
+
+.dark {
+  --na-bg: #020617;
+  --na-surface: #0f172a;
+  --na-border: #1e293b;
+  --na-text: #f8fafc;
+  --na-muted: #94a3b8;
+}
+
+@layer base {
+  body {
+    font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+    background-color: var(--na-bg);
+    color: var(--na-text);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #4f46e5;
+    outline-offset: 2px;
+  }
+}
+
+/* Modo QA: destaca elementos interativos e exibe data-testid */
+html[data-qa-mode="true"] [data-testid] {
+  position: relative;
+  outline: 1.5px dashed #14b8a6 !important;
+  outline-offset: 2px;
+}
+
+html[data-qa-mode="true"] [data-testid]:hover::after,
+html[data-qa-mode="true"] [data-testid]:focus-visible::after {
+  content: "testid: " attr(data-testid);
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 9999;
+  background: #0f172a;
+  color: #2dd4bf;
+  border: 1px solid #14b8a6;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  pointer-events: none;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
