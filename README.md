@@ -1,67 +1,49 @@
-# Nova Aurora Store Test Lab
+# 🛒 Nova Aurora Store Test Lab
 
-E-commerce completo de laboratório para prática de testes manuais e automatizados (**Selenium WebDriver + Java 17 + JUnit 5 + POM**, **Cucumber/BDD**, **Playwright**, **Cypress** e **Postman**).
+![Status](https://img.shields.io/badge/status-em%20constru%C3%A7%C3%A3o-orange?style=for-the-badge)
+![Google AI Studio](https://img.shields.io/badge/Google%20AI%20Studio-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
+![Vercel](https://img.shields.io/badge/Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)
+![Claude](https://img.shields.io/badge/Claude-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
 
-> **Aviso de Segurança do Laboratório:** Todos os dados exibidos e cadastrados no seed são **fictícios** (CPFs gerados matematicamente, e-mails de laboratório e telefones de exemplo). Como as credenciais abaixo são públicas, execute o ambiente apenas em rede interna, VPN ou localmente via Docker.
+> 🚧 **Projeto em construção.** Algumas funcionalidades ainda estão sendo desenvolvidas e podem mudar a qualquer momento.
 
----
+## 📖 Sobre o projeto
 
-## Execução Local com Docker Compose (1 comando)
+O **Nova Aurora Store Test Lab** é um e-commerce fictício criado como **ambiente de laboratório para estudos de QA**. A ideia é que o time possa praticar testes manuais e automatizados em uma aplicação com regras de negócio reais, usando ferramentas como Selenium WebDriver, Java, JUnit 5, Cucumber, Playwright, Cypress e Postman.
 
-Cada integrante da equipe pode subir sua própria instância isolada com PostgreSQL, API REST e Front-end:
+Todos os dados são **fictícios**. Este projeto é apenas para fins educacionais.
 
-```bash
-docker compose up -d --build
-```
+## 👥 Perfis de acesso
 
-Acesse:
-- Aplicação Web: `http://localhost:3000`
-- Documentação Swagger / OpenAPI (para importar no Postman): `http://localhost:3000/api-docs`
-- JSON OpenAPI bruto: `http://localhost:3000/api-docs.json`
+- **Administrador**: gestão completa da loja.
+- **Operador de Caixa (PDV)**: vendas presenciais no balcão.
+- **Cliente**: compras online na vitrine.
 
----
+## 🔑 Contas de laboratório
 
-## Perfis e Credenciais Padrão (`LAB_MODE=true`)
+| Perfil | E-mail | Senha |
+|---|---|---|
+| Administrador | admin@testlab.com.br | Admin@123 |
+| Operador de Caixa (PDV) | caixa@testlab.com.br | Caixa@123 |
+| Cliente | usuario@testlab.com.br | Usuario@123 |
 
-| Perfil | E-mail | Senha | Rota Inicial |
-|---|---|---|---|
-| **Administrador** | `admin@testlab.com.br` | `Admin@123` | `/admin` |
-| **Operador de Caixa (PDV)** | `caixa@testlab.com.br` | `Caixa@123` | `/pdv` |
-| **Cliente (Loja)** | `usuario@testlab.com.br` | `Usuario@123` | `/loja` |
+## 🛠️ Ferramentas utilizadas na construção
 
----
+- **Google AI Studio**: geração e apoio no desenvolvimento.
+- **Claude (Anthropic)**: elaboração de prompts e apoio no desenvolvimento.
+- **Supabase**: banco de dados PostgreSQL e autenticação.
+- **Vercel**: hospedagem e deploy da aplicação.
 
-## Rotas Principais
+## 🗺️ Status
 
-- `/login` — Tela de autenticação, cadastro, recuperação de senha e painel "Contas de laboratório"
-- `/admin` — Dashboard, Usuários, Clientes, Produtos, Categorias, Cupons, Pedidos, Financeiro, Anexos e Laboratório
-- `/pdv` — Frente de Caixa (abertura, suprimento/sangria, busca/código de barras, desconto com senha de supervisor, pagamento dividido, cupom e fechamento)
-- `/loja` — Vitrine com filtros, paginação, detalhe do produto, carrinho lateral, checkout em etapas, meus pedidos, trocas/devoluções, favoritos e minha conta
-- `/laboratorio` — Guia interativo de cenários de teste por módulo para estudo de QA
+- [ ] Autenticação e perfis
+- [ ] Área do Administrador
+- [ ] Área do Operador de Caixa (PDV)
+- [ ] Área do Cliente
+- [ ] Dados de demonstração (seed)
+- [ ] Documentação final
 
----
+## ⚠️ Aviso
 
-## Como Restaurar os Dados Iniciais
-
-1. Acesse com o perfil **Administrador** (`admin@testlab.com.br` / `Admin@123`).
-2. Navegue até **Admin → Laboratório**.
-3. Clique em **"Restaurar dados de demonstração"** (`data-testid="reset-demo-button"`) e confirme no modal.
-4. Ou via API (Postman): `POST /api/admin/reset-demo` com Bearer Token de Administrador.
-
----
-
-## Principais `data-testid` para Automação (Selenium / Playwright / Cypress)
-
-Ative o **Modo QA** no cabeçalho (`data-testid="qa-mode-toggle"`) para visualizar ao vivo o `data-testid` de cada componente interativo na tela.
-
-- Autenticação: `email-input`, `password-input`, `login-button`, `fill-admin-button`, `fill-cashier-button`, `fill-customer-button`, `register-tab-button`, `logout-button`
-- Feedback e Estados: `success-message`, `error-message`, `loading-spinner`, `access-denied`, `theme-toggle`, `qa-mode-toggle`
-- Admin: `save-button`, `customers-table`, `products-table`, `orders-table`, `financial-table`, `reset-demo-button`, `delay-select`
-- PDV: `pdv-search-input`, `pdv-open-register-button`, `pdv-close-register-button`, `pdv-discount-input`, `pdv-finish-sale-button`, `pdv-receipt-modal`
-- Loja: `store-search-input`, `add-to-cart-button`, `cart-drawer-button`, `cart-total`, `coupon-input`, `apply-coupon-button`, `checkout-button`, `confirm-order-button`
-
----
-
-Desenvolvido por **Jackson Mendes | Analista de QA**  
-GitHub: https://github.com/JacksonTestLab  
-LinkedIn: https://www.linkedin.com/in/jackson-mendes-a4731a2b3/
+Ambiente exclusivo para estudos. Não utilize dados reais.
