@@ -206,11 +206,14 @@ export const LoginPage: React.FC = () => {
         <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600 dark:text-teal-400 mb-1">
+                Plataforma de Testes QA
+              </p>
               <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-                Nova Aurora Store Test Lab
+                Nova Aurora Store
               </h1>
               <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                Acesse com seu perfil de laboratório ou crie uma conta de cliente.
+                Acesse com seu perfil ou crie uma conta para explorar a plataforma.
               </p>
             </div>
             <button
@@ -526,7 +529,7 @@ export const LoginPage: React.FC = () => {
           {tab === 'recover' && (
             <form onSubmit={handleRecoverSubmit} noValidate className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                Informe o e-mail cadastrado para simular o fluxo de recuperação de senha no laboratório.
+                Informe o e-mail cadastrado para simular o fluxo de recuperação de senha na plataforma de testes.
               </p>
               <div>
                 <label htmlFor="rec-email" className="block text-sm font-medium mb-1">
@@ -571,7 +574,7 @@ export const LoginPage: React.FC = () => {
               </div>
               <div>
                 <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                  Contas de laboratório
+                  Contas para Testes
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                   Preencha os campos de login automaticamente para testar cada perfil sem enviar o formulário.

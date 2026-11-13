@@ -1,10 +1,10 @@
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'Nova Aurora Store Test Lab API',
+    title: 'Nova Aurora Store · API QA',
     version: '1.0.0',
     description:
-      'API REST de laboratório para testes manuais e automatizados (Postman, Selenium, Playwright e Cypress). Todos os dados são fictícios.',
+      'API REST da Plataforma de Testes QA para testes manuais e automatizados (Postman, Selenium, Playwright e Cypress). Todos os dados são fictícios.',
   },
   servers: [{ url: '/', description: 'Servidor Local / Ambiente Atual' }],
   components: {

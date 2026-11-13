@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import path from 'path';
 import express from 'express';
-import swaggerUi from 'swagger-ui-express';
 import { getActiveDatabaseMode, repo } from './src/db/repo.ts';
 import { seedDatabase } from './src/db/seed.ts';
 import { getSupabaseStatus } from './src/lib/supabase-server.ts';
@@ -21,6 +20,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   '/src/assets/images',
   express.static(path.join(process.cwd(), 'src', 'assets', 'images'))
+);
+
+// Always serve self-hosted Swagger UI static assets cleanly in both dev and production
+app.use(
+  '/swagger-ui',
+  express.static(path.join(process.cwd(), 'public', 'swagger-ui'))
 );
 
 // Lazy idempotent database seed on first API call
@@ -62,11 +67,59 @@ app.use('/api', async (req, _res, next) => {
   return next();
 });
 
-// Swagger / OpenAPI docs for Postman & API QA
+// Swagger / OpenAPI docs for Postman & API QA (Vercel-safe self-hosted UI)
 app.get('/api-docs.json', (_req, res) => {
   res.json(openApiSpec);
 });
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+
+const swaggerHtml = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nova Aurora Store · API Swagger QA</title>
+  <link rel="icon" type="image/png" href="/swagger-ui/favicon-32x32.png" sizes="32x32" />
+  <link rel="icon" type="image/png" href="/swagger-ui/favicon-16x16.png" sizes="16x16" />
+  <link rel="stylesheet" href="/swagger-ui/swagger-ui.css" />
+  <style>
+    html { box-sizing: border-box; overflow-y: scroll; }
+    *, *:before, *:after { box-sizing: inherit; }
+    body { margin: 0; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
+    .swagger-fallback-error { max-width: 720px; margin: 48px auto; padding: 24px; background: #fff; border: 1px solid #fecaca; border-radius: 12px; color: #991b1b; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="/swagger-ui/swagger-ui-bundle.js"></script>
+  <script src="/swagger-ui/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.addEventListener('load', function () {
+      if (typeof SwaggerUIBundle !== 'function') {
+        document.getElementById('swagger-ui').innerHTML =
+          '<div class="swagger-fallback-error"><strong>Não foi possível carregar os scripts do Swagger UI.</strong><p>Acesse diretamente a especificação OpenAPI em <a href="/api-docs.json">/api-docs.json</a>.</p></div>';
+        return;
+      }
+      window.ui = SwaggerUIBundle({
+        spec: ${JSON.stringify(openApiSpec).replace(/</g, '\\u003c')},
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIStandalonePreset
+        ],
+        plugins: [
+          SwaggerUIBundle.plugins.DownloadUrl
+        ],
+        layout: 'StandaloneLayout'
+      });
+    });
+  </script>
+</body>
+</html>`;
+
+app.get(['/api-docs', '/api-docs/'], (_req, res) => {
+  res.status(200).type('text/html; charset=utf-8').send(swaggerHtml);
+});
 
 // Health check
 app.get('/api/health', (_req, res) => {

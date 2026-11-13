@@ -13,7 +13,7 @@ export const Footer: React.FC = () => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-600 dark:text-slate-400">
         <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-center sm:text-left">
           <span className="font-medium text-slate-800 dark:text-slate-200">
-            Nova Aurora Store Test Lab
+            Nova Aurora Store · Plataforma de Testes QA
           </span>
           <span aria-hidden="true">·</span>
           <span>v{config.version}</span>

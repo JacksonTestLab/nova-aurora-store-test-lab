@@ -72,7 +72,7 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const DEFAULT_CONFIG: LabConfig = {
-  appName: 'Nova Aurora Store Test Lab',
+  appName: 'Nova Aurora Store',
   version: '1.4.0',
   labMode: true,
   simulatedDelayMs: 0,
@@ -264,20 +264,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const loginWithGoogle = async (): Promise<UserProfile> => {
-    const result = await signInWithPopup(auth, googleAuthProvider);
-    const idToken = await result.user.getIdToken();
-    const data = await apiFetch<{ user: UserProfile; token: string }>('/api/auth/firebase', {
-      method: 'POST',
-      body: JSON.stringify({ idToken }),
-    });
-    setToken(data.token);
     try {
-      sessionStorage.setItem('na_token', data.token);
-    } catch {
-      // ignore
+      const result = await signInWithPopup(auth, googleAuthProvider);
+      const idToken = await result.user.getIdToken();
+      const data = await apiFetch<{ user: UserProfile; token: string }>('/api/auth/firebase', {
+        method: 'POST',
+        body: JSON.stringify({ idToken }),
+      });
+      setToken(data.token);
+      try {
+        sessionStorage.setItem('na_token', data.token);
+      } catch {
+        // ignore
+      }
+      setUser(data.user);
+      return data.user;
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/unauthorized-domain') {
+        const host = window.location.hostname;
+        throw new Error(
+          `Domínio "${host}" não autorizado no Firebase Authentication. Adicione "${host}" em Firebase Console → Authentication → Settings → Authorized domains (projeto ${auth.app.options.projectId || 'elated-bond-zlvvl'}).`
+        );
+      }
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        throw new Error('Autenticação com Google cancelada pelo usuário.');
+      }
+      if (code === 'auth/popup-blocked') {
+        throw new Error('O navegador bloqueou o pop-up do Google. Permita pop-ups para este site e tente novamente.');
+      }
+      if (code === 'auth/operation-not-allowed') {
+        throw new Error('O provedor Google não está ativado no Firebase Authentication.');
+      }
+      throw err;
     }
-    setUser(data.user);
-    return data.user;
   };
 
   const loginWithSupabase = async (email: string, password: string): Promise<UserProfile> => {

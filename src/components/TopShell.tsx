@@ -79,7 +79,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
       >
         <div className="flex items-center gap-2">
           <span className="font-medium text-teal-400">
-            Ambiente de testes: dados fictícios
+            Ambiente de Testes QA · Dados fictícios
           </span>
           <span aria-hidden="true" className="text-slate-600">
             ·
@@ -178,7 +178,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
               data-testid="header-greeting"
               className="hidden lg:block text-xs sm:text-sm text-slate-600 dark:text-slate-300 truncate max-w-md"
             >
-              Olá, <strong className="font-semibold text-slate-900 dark:text-white">{user.name}</strong>! Seja bem-vindo ao Nova Aurora Store Test Lab.
+              Olá, <strong className="font-semibold text-slate-900 dark:text-white">{user.name}</strong>! Seja bem-vindo à Nova Aurora Store.
             </p>
           )}
 
