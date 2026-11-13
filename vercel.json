@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api?__path=/api/$1" },
+    { "source": "/api-docs", "destination": "/api?__path=/api-docs" },
+    { "source": "/api-docs/(.*)", "destination": "/api?__path=/api-docs/$1" },
+    { "source": "/api-docs.json", "destination": "/api?__path=/api-docs.json" },
+    { "source": "/((?!api/|assets/|src/assets/).*)", "destination": "/index.html" }
+  ]
+}

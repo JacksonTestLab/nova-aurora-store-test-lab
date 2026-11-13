@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { eq } from 'drizzle-orm';
-import { db } from '../../db/index.ts';
-import { labSettings, users } from '../../db/schema.ts';
+import { getActiveDatabaseMode, repo } from '../../db/repo.ts';
 import {
   AuthRequest,
   JWT_SECRET,
@@ -12,6 +10,11 @@ import {
   toSafeUser,
 } from '../../middleware/auth.ts';
 import { adminAuth } from '../../lib/firebase-admin.ts';
+import {
+  getSupabaseStatus,
+  supabaseAdmin,
+  verifySupabaseAccessToken,
+} from '../../lib/supabase-server.ts';
 import {
   isValidCPF,
   isValidEmail,
@@ -34,8 +37,9 @@ function setAuthCookie(res: any, token: string) {
 }
 
 router.get('/config', async (_req, res) => {
+  const supabaseStatus = getSupabaseStatus();
   try {
-    const settings = await db.select().from(labSettings);
+    const settings = await repo.listAll('lab_settings');
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
     return res.json({
       appName: 'Nova Aurora Store Test Lab',
@@ -43,6 +47,8 @@ router.get('/config', async (_req, res) => {
       labMode: process.env.LAB_MODE !== 'false',
       simulatedDelayMs: Number(map.simulatedDelayMs || '0'),
       maxCashierDiscountPercent: Number(map.maxCashierDiscountPercent || '15'),
+      databaseMode: getActiveDatabaseMode(),
+      supabase: supabaseStatus,
     });
   } catch (err) {
     console.error('Config error:', err);
@@ -52,6 +58,8 @@ router.get('/config', async (_req, res) => {
       labMode: process.env.LAB_MODE !== 'false',
       simulatedDelayMs: 0,
       maxCashierDiscountPercent: 15,
+      databaseMode: getActiveDatabaseMode(),
+      supabase: supabaseStatus,
     });
   }
 });
@@ -73,11 +81,7 @@ router.post('/auth/login', async (req, res) => {
       });
     }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, emailRaw))
-      .limit(1);
+    const user = await repo.findOneWhere('users', { email: emailRaw });
 
     if (!user) {
       return res.status(401).json({
@@ -98,8 +102,7 @@ router.post('/auth/login', async (req, res) => {
       );
       const mins = Math.floor(remainingSeconds / 60);
       const secs = remainingSeconds % 60;
-      const formatted =
-        mins > 0 ? `${mins}m ${secs}s` : `${secs} segundos`;
+      const formatted = mins > 0 ? `${mins}m ${secs}s` : `${secs} segundos`;
       return res.status(423).json({
         error: `Conta temporariamente bloqueada após ${LOCKOUT_MAX_ATTEMPTS} tentativas inválidas. Tente novamente em ${formatted}.`,
         remainingSeconds,
@@ -113,10 +116,11 @@ router.post('/auth/login', async (req, res) => {
       const nextAttempts = (user.failedLoginAttempts || 0) + 1;
       if (nextAttempts >= LOCKOUT_MAX_ATTEMPTS) {
         const lockUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000);
-        await db
-          .update(users)
-          .set({ failedLoginAttempts: nextAttempts, lockedUntil: lockUntil })
-          .where(eq(users.id, user.id));
+        await repo.updateWhere(
+          'users',
+          { id: user.id },
+          { failedLoginAttempts: nextAttempts, lockedUntil: lockUntil }
+        );
         await logAudit(
           { email: user.email, role: user.role },
           'LOGIN_LOCKED',
@@ -129,10 +133,7 @@ router.post('/auth/login', async (req, res) => {
         });
       }
 
-      await db
-        .update(users)
-        .set({ failedLoginAttempts: nextAttempts })
-        .where(eq(users.id, user.id));
+      await repo.updateWhere('users', { id: user.id }, { failedLoginAttempts: nextAttempts });
 
       return res.status(401).json({
         error: `E-mail ou senha incorretos. Tentativa ${nextAttempts} de ${LOCKOUT_MAX_ATTEMPTS}.`,
@@ -140,10 +141,11 @@ router.post('/auth/login', async (req, res) => {
     }
 
     // Reset failure counter on success
-    await db
-      .update(users)
-      .set({ failedLoginAttempts: 0, lockedUntil: null })
-      .where(eq(users.id, user.id));
+    await repo.updateWhere(
+      'users',
+      { id: user.id },
+      { failedLoginAttempts: 0, lockedUntil: null }
+    );
 
     const token = jwt.sign(
       { userId: user.id, role: user.role, email: user.email },
@@ -177,30 +179,21 @@ router.post('/auth/firebase', async (req, res) => {
       return res.status(400).json({ error: 'Conta Google sem e-mail.' });
     }
     const email = decoded.email.toLowerCase();
-    const [existing] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
+    let userRecord = await repo.findOneWhere('users', { email });
 
-    let userRecord = existing;
     if (!userRecord) {
-      const [created] = await db
-        .insert(users)
-        .values({
+      userRecord = await repo.upsertRow(
+        'users',
+        {
           uid: decoded.uid,
           name: sanitizeText(decoded.name || email.split('@')[0]),
           email,
           role: 'cliente',
           avatarUrl: decoded.picture || null,
           status: 'ativo',
-        })
-        .onConflictDoUpdate({
-          target: users.email,
-          set: { uid: decoded.uid },
-        })
-        .returning();
-      userRecord = created;
+        },
+        'email'
+      );
     }
 
     if (userRecord.status !== 'ativo') {
@@ -217,6 +210,67 @@ router.post('/auth/firebase', async (req, res) => {
   } catch (err) {
     console.error('Firebase auth error:', err);
     return res.status(401).json({ error: 'Falha na autenticação via Google.' });
+  }
+});
+
+router.post('/auth/supabase', async (req, res) => {
+  try {
+    const accessToken = String(req.body?.accessToken || '');
+    if (!accessToken) {
+      return res.status(400).json({ error: 'Token Supabase ausente.' });
+    }
+    const sbUser = await verifySupabaseAccessToken(accessToken);
+    if (!sbUser || !sbUser.email) {
+      return res.status(401).json({ error: 'Sessão Supabase inválida ou expirada.' });
+    }
+    const email = sbUser.email.toLowerCase();
+    let userRecord =
+      (await repo.findOneWhere('users', { uid: sbUser.id })) ||
+      (await repo.findOneWhere('users', { email }));
+
+    if (!userRecord) {
+      const displayName = sanitizeText(
+        (sbUser.user_metadata?.name as string) ||
+          (sbUser.user_metadata?.full_name as string) ||
+          email.split('@')[0]
+      );
+      userRecord = await repo.upsertRow(
+        'users',
+        {
+          uid: sbUser.id,
+          name: displayName,
+          email,
+          role: 'cliente',
+          avatarUrl: (sbUser.user_metadata?.avatar_url as string) || null,
+          status: 'ativo',
+        },
+        'email'
+      );
+    } else if (!userRecord.uid) {
+      const [updated] = await repo.updateWhere('users', { id: userRecord.id }, { uid: sbUser.id });
+      if (updated) userRecord = updated;
+    }
+
+    if (userRecord.status !== 'ativo') {
+      return res.status(403).json({ error: 'Conta inativa.' });
+    }
+
+    const token = jwt.sign(
+      { userId: userRecord.id, role: userRecord.role, email: userRecord.email },
+      JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+    setAuthCookie(res, token);
+    await logAudit(
+      { email: userRecord.email, role: userRecord.role },
+      'LOGIN_SUPABASE',
+      'auth',
+      `Autenticação via Supabase Auth (${userRecord.role}).`
+    );
+    return res.json({ user: toSafeUser(userRecord), token });
+  } catch (err) {
+    console.error('Supabase auth error:', err);
+    return res.status(401).json({ error: 'Falha na autenticação via Supabase.' });
   }
 });
 
@@ -249,28 +303,47 @@ router.post('/auth/register', async (req, res) => {
 
     const formattedCpf = maskCPF(cpfDigits);
 
-    const [dupEmail] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    const dupEmail = await repo.findOneWhere('users', { email });
     if (dupEmail) {
       return res.status(409).json({ error: 'Já existe uma conta cadastrada com este e-mail.' });
     }
 
-    const [dupCpf] = await db.select().from(users).where(eq(users.cpf, formattedCpf)).limit(1);
+    const dupCpf = await repo.findOneWhere('users', { cpf: formattedCpf });
     if (dupCpf) {
       return res.status(409).json({ error: 'Já existe uma conta cadastrada com este CPF.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const [created] = await db
-      .insert(users)
-      .values({
-        name,
-        email,
-        cpf: formattedCpf,
-        passwordHash,
-        role: 'cliente',
-        status: 'ativo',
-      })
-      .returning();
+    let created = await repo.insertRow('users', {
+      name,
+      email,
+      cpf: formattedCpf,
+      passwordHash,
+      role: 'cliente',
+      status: 'ativo',
+    });
+
+    // Also register in Supabase Auth when service role is configured
+    if (supabaseAdmin) {
+      try {
+        const { data: sbCreated } = await supabaseAdmin.auth.admin.createUser({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: { name },
+        });
+        if (sbCreated?.user?.id) {
+          const [updated] = await repo.updateWhere(
+            'users',
+            { id: created.id },
+            { uid: sbCreated.user.id }
+          );
+          if (updated) created = updated;
+        }
+      } catch {
+        // non-fatal
+      }
+    }
 
     const token = jwt.sign(
       { userId: created.id, role: created.role, email: created.email },
@@ -299,7 +372,7 @@ router.post('/auth/recover-password', async (req, res) => {
   });
 });
 
-router.post('/auth/logout', (req, res) => {
+router.post('/auth/logout', (_req, res) => {
   res.clearCookie('na_token', { path: '/' });
   return res.json({ message: 'Sessão encerrada com sucesso.' });
 });

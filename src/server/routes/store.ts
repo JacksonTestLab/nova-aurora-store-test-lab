@@ -1,20 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../../db/index.ts';
-import {
-  addresses,
-  cartItems,
-  categories,
-  coupons,
-  favorites,
-  financialEntries,
-  orderItems,
-  orders,
-  products,
-  reviews,
-  users,
-} from '../../db/schema.ts';
+import { repo } from '../../db/repo.ts';
 import {
   AuthRequest,
   logAudit,
@@ -34,11 +20,11 @@ const router = Router();
 // --- PUBLIC STOREFRONT ---
 router.get('/categories', async (_req, res) => {
   try {
-    const rows = await db
-      .select()
-      .from(categories)
-      .where(eq(categories.status, 'ativo'))
-      .orderBy(categories.name);
+    const rows = await repo.findWhere(
+      'categories',
+      { status: 'ativo' },
+      { orderBy: 'name' }
+    );
     return res.json({ categories: rows });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao carregar categorias.' });
@@ -56,8 +42,8 @@ router.get('/products', async (req, res) => {
     const page = Math.max(1, Number(req.query.page || 1));
     const limit = Math.min(48, Math.max(1, Number(req.query.limit || 8)));
 
-    const rows = await db.select().from(products).where(eq(products.status, 'ativo'));
-    const cats = await db.select().from(categories);
+    const rows = await repo.findWhere('products', { status: 'ativo' });
+    const cats = await repo.listAll('categories');
     const catMap = new Map(cats.map((c) => [c.id, c.name]));
 
     let list = rows.map((p) => ({
@@ -105,17 +91,17 @@ router.get('/products', async (req, res) => {
 router.get('/products/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const [prod] = await db.select().from(products).where(eq(products.id, id)).limit(1);
+    const prod = await repo.findOneWhere('products', { id });
     if (!prod || prod.status !== 'ativo') {
       return res.status(404).json({ error: 'Produto não encontrado.' });
     }
-    const cats = await db.select().from(categories);
+    const cats = await repo.listAll('categories');
     const cat = cats.find((c) => c.id === prod.categoryId);
-    const prodReviews = await db
-      .select()
-      .from(reviews)
-      .where(eq(reviews.productId, id))
-      .orderBy(desc(reviews.createdAt));
+    const prodReviews = await repo.findWhere(
+      'reviews',
+      { productId: id },
+      { orderBy: 'createdAt', desc: true }
+    );
 
     const avgRating =
       prodReviews.length > 0
@@ -135,15 +121,11 @@ router.get('/products/:id', async (req, res) => {
 // --- AUTHENTICATED STORE ROUTES ---
 router.get('/cart', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const rows = await db
-      .select()
-      .from(cartItems)
-      .where(eq(cartItems.userId, req.user!.id));
-
+    const rows = await repo.findWhere('cart_items', { userId: req.user!.id });
     if (rows.length === 0) return res.json({ items: [], subtotalCents: 0 });
 
     const prodIds = rows.map((r) => r.productId);
-    const prods = await db.select().from(products).where(inArray(products.id, prodIds));
+    const prods = await repo.findIn('products', 'id', prodIds);
     const prodMap = new Map(prods.map((p) => [p.id, p]));
 
     const items = rows
@@ -179,7 +161,7 @@ router.post('/cart', requireAuth, async (req: AuthRequest, res) => {
     const productId = Number(req.body?.productId);
     const quantity = Math.max(1, Number(req.body?.quantity || 1));
 
-    const [prod] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
+    const prod = await repo.findOneWhere('products', { id: productId });
     if (!prod || prod.status !== 'ativo') {
       return res.status(404).json({ error: 'Produto não encontrado.' });
     }
@@ -187,11 +169,10 @@ router.post('/cart', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Produto indisponível no momento (sem estoque).' });
     }
 
-    const [existing] = await db
-      .select()
-      .from(cartItems)
-      .where(and(eq(cartItems.userId, req.user!.id), eq(cartItems.productId, productId)))
-      .limit(1);
+    const existing = await repo.findOneWhere('cart_items', {
+      userId: req.user!.id,
+      productId,
+    });
 
     const targetQty = (existing ? existing.quantity : 0) + quantity;
     if (targetQty > prod.stock) {
@@ -201,12 +182,13 @@ router.post('/cart', requireAuth, async (req: AuthRequest, res) => {
     }
 
     if (existing) {
-      await db
-        .update(cartItems)
-        .set({ quantity: targetQty, updatedAt: new Date() })
-        .where(eq(cartItems.id, existing.id));
+      await repo.updateWhere(
+        'cart_items',
+        { id: existing.id },
+        { quantity: targetQty, updatedAt: new Date() }
+      );
     } else {
-      await db.insert(cartItems).values({
+      await repo.insertRow('cart_items', {
         userId: req.user!.id,
         productId,
         quantity: targetQty,
@@ -226,7 +208,7 @@ router.patch('/cart/:productId', requireAuth, async (req: AuthRequest, res) => {
     if (Number.isNaN(quantity) || quantity < 1) {
       return res.status(400).json({ error: 'A quantidade mínima é 1.' });
     }
-    const [prod] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
+    const prod = await repo.findOneWhere('products', { id: productId });
     if (!prod) return res.status(404).json({ error: 'Produto não encontrado.' });
     if (quantity > prod.stock) {
       return res.status(400).json({
@@ -234,10 +216,11 @@ router.patch('/cart/:productId', requireAuth, async (req: AuthRequest, res) => {
       });
     }
 
-    await db
-      .update(cartItems)
-      .set({ quantity, updatedAt: new Date() })
-      .where(and(eq(cartItems.userId, req.user!.id), eq(cartItems.productId, productId)));
+    await repo.updateWhere(
+      'cart_items',
+      { userId: req.user!.id, productId },
+      { quantity, updatedAt: new Date() }
+    );
 
     return res.json({ message: 'Quantidade atualizada.' });
   } catch (err) {
@@ -248,9 +231,7 @@ router.patch('/cart/:productId', requireAuth, async (req: AuthRequest, res) => {
 router.delete('/cart/:productId', requireAuth, async (req: AuthRequest, res) => {
   try {
     const productId = Number(req.params.productId);
-    await db
-      .delete(cartItems)
-      .where(and(eq(cartItems.userId, req.user!.id), eq(cartItems.productId, productId)));
+    await repo.deleteWhere('cart_items', { userId: req.user!.id, productId });
     return res.json({ message: 'Item removido do carrinho.' });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao remover item.' });
@@ -259,7 +240,7 @@ router.delete('/cart/:productId', requireAuth, async (req: AuthRequest, res) => 
 
 router.delete('/cart', requireAuth, async (req: AuthRequest, res) => {
   try {
-    await db.delete(cartItems).where(eq(cartItems.userId, req.user!.id));
+    await repo.deleteWhere('cart_items', { userId: req.user!.id });
     return res.json({ message: 'Carrinho limpo com sucesso.' });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao limpar carrinho.' });
@@ -272,7 +253,7 @@ router.post('/coupons/validate', requireAuth, async (req, res) => {
     const subtotalCents = Number(req.body?.subtotalCents || 0);
     if (!code) return res.status(400).json({ error: 'Informe um código de cupom.' });
 
-    const [coupon] = await db.select().from(coupons).where(eq(coupons.code, code)).limit(1);
+    const coupon = await repo.findOneWhere('coupons', { code });
     if (!coupon || coupon.status !== 'ativo') {
       return res.status(404).json({ error: 'Cupom inválido ou inativo.' });
     }
@@ -318,20 +299,17 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Forma de pagamento inválida.' });
     }
 
-    const cartRows = await db
-      .select()
-      .from(cartItems)
-      .where(eq(cartItems.userId, req.user!.id));
+    const cartRows = await repo.findWhere('cart_items', { userId: req.user!.id });
     if (cartRows.length === 0) {
       return res.status(400).json({ error: 'Seu carrinho está vazio.' });
     }
 
     const prodIds = cartRows.map((c) => c.productId);
-    const prods = await db.select().from(products).where(inArray(products.id, prodIds));
+    const prods = await repo.findIn('products', 'id', prodIds);
     const prodMap = new Map(prods.map((p) => [p.id, p]));
 
     let subtotalCents = 0;
-    const resolved: Array<{ product: typeof products.$inferSelect; quantity: number }> = [];
+    const resolved: Array<{ product: any; quantity: number }> = [];
 
     for (const row of cartRows) {
       const p = prodMap.get(row.productId);
@@ -348,9 +326,9 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
     }
 
     let discountCents = 0;
-    let appliedCoupon: typeof coupons.$inferSelect | null = null;
+    let appliedCoupon: any = null;
     if (couponCode) {
-      const [c] = await db.select().from(coupons).where(eq(coupons.code, couponCode)).limit(1);
+      const c = await repo.findOneWhere('coupons', { code: couponCode });
       if (!c || c.status !== 'ativo') {
         return res.status(400).json({ error: 'Cupom inválido.' });
       }
@@ -373,40 +351,32 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
 
     // Deduct stock
     for (const r of resolved) {
-      await db
-        .update(products)
-        .set({ stock: sql`${products.stock} - ${r.quantity}` })
-        .where(eq(products.id, r.product.id));
+      await repo.adjustNumericColumn('products', r.product.id, 'stock', -r.quantity);
     }
 
     if (appliedCoupon) {
-      await db
-        .update(coupons)
-        .set({ usedCount: sql`${coupons.usedCount} + 1` })
-        .where(eq(coupons.id, appliedCoupon.id));
+      await repo.adjustNumericColumn('coupons', appliedCoupon.id, 'usedCount', 1);
     }
 
     const orderNumber = `NA-2026-${Date.now().toString().slice(-5)}`;
-    const [createdOrder] = await db
-      .insert(orders)
-      .values({
-        orderNumber,
-        channel: 'online',
-        customerId: req.user!.id,
-        customerName: req.user!.name,
-        customerCpf: req.user!.cpf,
-        status: initialStatus,
-        subtotalCents,
-        discountCents,
-        shippingCents,
-        totalCents,
-        couponCode: appliedCoupon?.code || null,
-        paymentMethod,
-        shippingAddress: JSON.stringify(shippingAddress),
-      })
-      .returning();
+    const createdOrder = await repo.insertRow('orders', {
+      orderNumber,
+      channel: 'online',
+      customerId: req.user!.id,
+      customerName: req.user!.name,
+      customerCpf: req.user!.cpf,
+      status: initialStatus,
+      subtotalCents,
+      discountCents,
+      shippingCents,
+      totalCents,
+      couponCode: appliedCoupon?.code || null,
+      paymentMethod,
+      shippingAddress: JSON.stringify(shippingAddress),
+    });
 
-    await db.insert(orderItems).values(
+    await repo.insertMany(
+      'order_items',
       resolved.map((r) => ({
         orderId: createdOrder.id,
         productId: r.product.id,
@@ -419,7 +389,7 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
     );
 
     const todayStr = new Date().toISOString().slice(0, 10);
-    await db.insert(financialEntries).values({
+    await repo.insertRow('financial_entries', {
       type: 'receber',
       description: `Pedido Online ${orderNumber} — ${paymentMethod}`,
       amountCents: totalCents,
@@ -429,7 +399,7 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
       orderId: createdOrder.id,
     });
 
-    await db.delete(cartItems).where(eq(cartItems.userId, req.user!.id));
+    await repo.deleteWhere('cart_items', { userId: req.user!.id });
     await logAudit(req.user, 'ONLINE_CHECKOUT', 'orders', `Pedido ${orderNumber} criado.`);
 
     return res.status(201).json({ order: createdOrder });
@@ -442,16 +412,14 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
 // --- CUSTOMER ORDERS ---
 router.get('/orders', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const userOrders = await db
-      .select()
-      .from(orders)
-      .where(eq(orders.customerId, req.user!.id))
-      .orderBy(desc(orders.createdAt));
+    const userOrders = await repo.findWhere(
+      'orders',
+      { customerId: req.user!.id },
+      { orderBy: 'createdAt', desc: true }
+    );
 
     const ids = userOrders.map((o) => o.id);
-    const items = ids.length
-      ? await db.select().from(orderItems).where(inArray(orderItems.orderId, ids))
-      : [];
+    const items = await repo.findIn('order_items', 'orderId', ids);
 
     const enriched = userOrders.map((o) => ({
       ...o,
@@ -467,11 +435,7 @@ router.get('/orders', requireAuth, async (req: AuthRequest, res) => {
 router.post('/orders/:id/cancel', requireAuth, async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [order] = await db
-      .select()
-      .from(orders)
-      .where(and(eq(orders.id, id), eq(orders.customerId, req.user!.id)))
-      .limit(1);
+    const order = await repo.findOneWhere('orders', { id, customerId: req.user!.id });
 
     if (!order) return res.status(404).json({ error: 'Pedido não encontrado.' });
     if (!['Pendente', 'Pago'].includes(order.status)) {
@@ -480,22 +444,19 @@ router.post('/orders/:id/cancel', requireAuth, async (req: AuthRequest, res) => 
       });
     }
 
-    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+    const items = await repo.findWhere('order_items', { orderId: order.id });
     for (const item of items) {
-      await db
-        .update(products)
-        .set({ stock: sql`${products.stock} + ${item.quantity}` })
-        .where(eq(products.id, item.productId));
+      await repo.adjustNumericColumn('products', item.productId, 'stock', item.quantity);
     }
 
-    const [updated] = await db
-      .update(orders)
-      .set({
+    const [updated] = await repo.updateWhere(
+      'orders',
+      { id },
+      {
         status: 'Cancelado',
         cancellationReason: 'Cancelado pelo cliente antes do envio.',
-      })
-      .where(eq(orders.id, id))
-      .returning();
+      }
+    );
 
     await logAudit(req.user, 'CUSTOMER_CANCEL_ORDER', 'orders', `Pedido ${order.orderNumber} cancelado pelo cliente.`);
     return res.json({ order: updated });
@@ -512,11 +473,7 @@ router.post('/orders/:id/return', requireAuth, async (req: AuthRequest, res) => 
       return res.status(400).json({ error: 'Informe o motivo da troca/devolução (mínimo 5 caracteres).' });
     }
 
-    const [order] = await db
-      .select()
-      .from(orders)
-      .where(and(eq(orders.id, id), eq(orders.customerId, req.user!.id)))
-      .limit(1);
+    const order = await repo.findOneWhere('orders', { id, customerId: req.user!.id });
 
     if (!order) return res.status(404).json({ error: 'Pedido não encontrado.' });
     if (order.status !== 'Entregue') {
@@ -534,11 +491,11 @@ router.post('/orders/:id/return', requireAuth, async (req: AuthRequest, res) => 
       });
     }
 
-    const [updated] = await db
-      .update(orders)
-      .set({ returnStatus: 'Solicitado', returnReason: reason })
-      .where(eq(orders.id, id))
-      .returning();
+    const [updated] = await repo.updateWhere(
+      'orders',
+      { id },
+      { returnStatus: 'Solicitado', returnReason: reason }
+    );
 
     await logAudit(req.user, 'REQUEST_RETURN', 'orders', `Solicitação de devolução para ${order.orderNumber}.`);
     return res.json({ order: updated });
@@ -550,15 +507,13 @@ router.post('/orders/:id/return', requireAuth, async (req: AuthRequest, res) => 
 // --- FAVORITES ---
 router.get('/favorites', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const favs = await db
-      .select()
-      .from(favorites)
-      .where(eq(favorites.userId, req.user!.id));
+    const favs = await repo.findWhere('favorites', { userId: req.user!.id });
     if (favs.length === 0) return res.json({ favorites: [] });
-    const prods = await db
-      .select()
-      .from(products)
-      .where(inArray(products.id, favs.map((f) => f.productId)));
+    const prods = await repo.findIn(
+      'products',
+      'id',
+      favs.map((f) => f.productId)
+    );
     return res.json({ favorites: prods });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar favoritos.' });
@@ -568,13 +523,12 @@ router.get('/favorites', requireAuth, async (req: AuthRequest, res) => {
 router.post('/favorites/:productId', requireAuth, async (req: AuthRequest, res) => {
   try {
     const productId = Number(req.params.productId);
-    const [existing] = await db
-      .select()
-      .from(favorites)
-      .where(and(eq(favorites.userId, req.user!.id), eq(favorites.productId, productId)))
-      .limit(1);
+    const existing = await repo.findOneWhere('favorites', {
+      userId: req.user!.id,
+      productId,
+    });
     if (!existing) {
-      await db.insert(favorites).values({ userId: req.user!.id, productId });
+      await repo.insertRow('favorites', { userId: req.user!.id, productId });
     }
     return res.json({ favorited: true });
   } catch (err) {
@@ -585,9 +539,7 @@ router.post('/favorites/:productId', requireAuth, async (req: AuthRequest, res) 
 router.delete('/favorites/:productId', requireAuth, async (req: AuthRequest, res) => {
   try {
     const productId = Number(req.params.productId);
-    await db
-      .delete(favorites)
-      .where(and(eq(favorites.userId, req.user!.id), eq(favorites.productId, productId)));
+    await repo.deleteWhere('favorites', { userId: req.user!.id, productId });
     return res.json({ favorited: false });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao remover favorito.' });
@@ -606,10 +558,7 @@ router.post('/products/:id/reviews', requireAuth, async (req: AuthRequest, res) 
     }
 
     // Check if customer bought this product
-    const userOrders = await db
-      .select()
-      .from(orders)
-      .where(eq(orders.customerId, req.user!.id));
+    const userOrders = await repo.findWhere('orders', { customerId: req.user!.id });
     const validOrderIds = userOrders
       .filter((o) => o.status !== 'Cancelado')
       .map((o) => o.id);
@@ -617,24 +566,18 @@ router.post('/products/:id/reviews', requireAuth, async (req: AuthRequest, res) 
     if (validOrderIds.length === 0) {
       return res.status(403).json({ error: 'Apenas clientes que compraram este produto podem avaliá-lo.' });
     }
-    const items = await db
-      .select()
-      .from(orderItems)
-      .where(inArray(orderItems.orderId, validOrderIds));
+    const items = await repo.findIn('order_items', 'orderId', validOrderIds);
     if (!items.some((i) => i.productId === productId)) {
       return res.status(403).json({ error: 'Apenas clientes que compraram este produto podem avaliá-lo.' });
     }
 
-    const [created] = await db
-      .insert(reviews)
-      .values({
-        productId,
-        userId: req.user!.id,
-        userName: req.user!.name,
-        rating: Math.round(rating),
-        comment,
-      })
-      .returning();
+    const created = await repo.insertRow('reviews', {
+      productId,
+      userId: req.user!.id,
+      userName: req.user!.name,
+      rating: Math.round(rating),
+      comment,
+    });
 
     return res.status(201).json({ review: created });
   } catch (err) {
@@ -660,17 +603,17 @@ router.put('/account', requireAuth, async (req: AuthRequest, res) => {
         return res.status(400).json({ error: 'CPF inválido.' });
       }
       formattedCpf = maskCPF(cpfRaw);
-      const all = await db.select().from(users);
+      const all = await repo.listAll('users');
       if (all.some((u) => u.id !== req.user!.id && u.cpf === formattedCpf)) {
         return res.status(409).json({ error: 'CPF já cadastrado por outro usuário.' });
       }
     }
 
-    const [updated] = await db
-      .update(users)
-      .set({ name, phone, birthDate, cpf: formattedCpf })
-      .where(eq(users.id, req.user!.id))
-      .returning();
+    const [updated] = await repo.updateWhere(
+      'users',
+      { id: req.user!.id },
+      { name, phone, birthDate, cpf: formattedCpf }
+    );
 
     return res.json({ user: toSafeUser(updated) });
   } catch (err) {
@@ -686,13 +629,13 @@ router.post('/account/password', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
     }
 
-    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    const user = await repo.findOneWhere('users', { id: req.user!.id });
     if (!user?.passwordHash || !(await bcrypt.compare(currentPassword, user.passwordHash))) {
       return res.status(400).json({ error: 'Senha atual incorreta.' });
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    await repo.updateWhere('users', { id: user.id }, { passwordHash });
     return res.json({ message: 'Senha alterada com sucesso.' });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao alterar senha.' });
@@ -704,10 +647,11 @@ router.delete('/account', requireAuth, async (req: AuthRequest, res) => {
     if (req.user!.role === 'admin') {
       return res.status(400).json({ error: 'Contas de administrador não podem ser auto-excluídas.' });
     }
-    await db
-      .update(users)
-      .set({ status: 'inativo', email: `deleted_${req.user!.id}_${Date.now()}@anon.test` })
-      .where(eq(users.id, req.user!.id));
+    await repo.updateWhere(
+      'users',
+      { id: req.user!.id },
+      { status: 'inativo', email: `deleted_${req.user!.id}_${Date.now()}@anon.test` }
+    );
     res.clearCookie('na_token', { path: '/' });
     return res.json({ message: 'Conta encerrada com sucesso.' });
   } catch (err) {
@@ -717,11 +661,11 @@ router.delete('/account', requireAuth, async (req: AuthRequest, res) => {
 
 router.get('/addresses', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const rows = await db
-      .select()
-      .from(addresses)
-      .where(eq(addresses.userId, req.user!.id))
-      .orderBy(desc(addresses.isDefault));
+    const rows = await repo.findWhere(
+      'addresses',
+      { userId: req.user!.id },
+      { orderBy: 'isDefault', desc: true }
+    );
     return res.json({ addresses: rows });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar endereços.' });
@@ -745,27 +689,21 @@ router.post('/addresses', requireAuth, async (req: AuthRequest, res) => {
     }
 
     if (isDefault) {
-      await db
-        .update(addresses)
-        .set({ isDefault: false })
-        .where(eq(addresses.userId, req.user!.id));
+      await repo.updateWhere('addresses', { userId: req.user!.id }, { isDefault: false });
     }
 
-    const [created] = await db
-      .insert(addresses)
-      .values({
-        userId: req.user!.id,
-        label,
-        cep,
-        street,
-        number,
-        complement,
-        neighborhood,
-        city,
-        state,
-        isDefault,
-      })
-      .returning();
+    const created = await repo.insertRow('addresses', {
+      userId: req.user!.id,
+      label,
+      cep,
+      street,
+      number,
+      complement,
+      neighborhood,
+      city,
+      state,
+      isDefault,
+    });
 
     return res.status(201).json({ address: created });
   } catch (err) {
@@ -776,9 +714,7 @@ router.post('/addresses', requireAuth, async (req: AuthRequest, res) => {
 router.delete('/addresses/:id', requireAuth, async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    await db
-      .delete(addresses)
-      .where(and(eq(addresses.id, id), eq(addresses.userId, req.user!.id)));
+    await repo.deleteWhere('addresses', { id, userId: req.user!.id });
     return res.json({ message: 'Endereço removido.' });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao remover endereço.' });

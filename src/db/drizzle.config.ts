@@ -3,35 +3,48 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
+const supabaseDbUrl = (process.env.SUPABASE_DB_URL || '').trim();
 const sqlHost = process.env.SQL_HOST;
 const sqlDbName = process.env.SQL_DB_NAME;
-const user = process.env.SQL_ADMIN_USER;
-const password = process.env.SQL_ADMIN_PASSWORD;
+const user = process.env.SQL_ADMIN_USER || process.env.SQL_USER;
+const password = process.env.SQL_ADMIN_PASSWORD || process.env.SQL_PASSWORD;
 
-if (!sqlHost) {
-  throw new Error('SQL_HOST must be set in environment variables.');
+if (!supabaseDbUrl) {
+  if (!sqlHost) {
+    throw new Error('SUPABASE_DB_URL or SQL_HOST must be set in environment variables.');
+  }
+  if (!sqlDbName) {
+    throw new Error('SQL_DB_NAME must be set in environment variables.');
+  }
+  if (!user) {
+    throw new Error('SQL_ADMIN_USER must be set in environment variables.');
+  }
+  if (!password) {
+    throw new Error('SQL_ADMIN_PASSWORD must be set in environment variables.');
+  }
 }
-if (!sqlDbName) {
-  throw new Error('SQL_DB_NAME must be set in environment variables.');
-}
-if (!user) {
-  throw new Error('SQL_ADMIN_USER must be set in environment variables.');
-}
-if (!password) {
-  throw new Error('SQL_ADMIN_PASSWORD must be set in environment variables.');
-}
+
+const isSupabaseHost =
+  Boolean(supabaseDbUrl) ||
+  (sqlHost || '').includes('.supabase.co') ||
+  (sqlHost || '').includes('.supabase.com');
 
 export default defineConfig({
   schema: './src/db/schema.ts',
   out: './drizzle',
   dialect: 'postgresql',
   schemaFilter: ['public'],
-  dbCredentials: {
-    host: sqlHost,
-    user: user,
-    password: password,
-    database: sqlDbName,
-    ssl: false,
-  },
+  dbCredentials: supabaseDbUrl
+    ? {
+        url: supabaseDbUrl,
+        ssl: { rejectUnauthorized: false },
+      }
+    : {
+        host: sqlHost!,
+        user: user!,
+        password: password!,
+        database: sqlDbName!,
+        ssl: isSupabaseHost ? { rejectUnauthorized: false } : false,
+      },
   verbose: true,
 });

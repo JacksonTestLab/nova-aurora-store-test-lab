@@ -1,9 +1,9 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { eq } from 'drizzle-orm';
-import { db } from '../db/index.ts';
-import { auditLogs, users } from '../db/schema.ts';
+import { repo } from '../db/repo.ts';
+import { users } from '../db/schema.ts';
 import { adminAuth } from '../lib/firebase-admin.ts';
+import { verifySupabaseAccessToken } from '../lib/supabase-server.ts';
 
 export const JWT_SECRET =
   process.env.JWT_SECRET || 'nova-aurora-test-lab-secret-key-2026';
@@ -32,24 +32,24 @@ export interface AuthRequest extends Request {
   user?: SafeUser;
 }
 
-export function toSafeUser(u: typeof users.$inferSelect): SafeUser {
+export function toSafeUser(u: typeof users.$inferSelect | any): SafeUser {
   return {
     id: u.id,
-    uid: u.uid,
+    uid: u.uid ?? null,
     name: u.name,
     email: u.email,
     role: u.role,
-    cpf: u.cpf,
-    phone: u.phone,
-    birthDate: u.birthDate,
-    cep: u.cep,
-    address: u.address,
-    number: u.number,
-    complement: u.complement,
-    neighborhood: u.neighborhood,
-    city: u.city,
-    state: u.state,
-    avatarUrl: u.avatarUrl,
+    cpf: u.cpf ?? null,
+    phone: u.phone ?? null,
+    birthDate: u.birthDate ?? null,
+    cep: u.cep ?? null,
+    address: u.address ?? null,
+    number: u.number ?? null,
+    complement: u.complement ?? null,
+    neighborhood: u.neighborhood ?? null,
+    city: u.city ?? null,
+    state: u.state ?? null,
+    avatarUrl: u.avatarUrl ?? null,
     status: u.status,
   };
 }
@@ -85,11 +85,7 @@ export const requireAuth = async (
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { userId: number; role: string };
-    const [found] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, decoded.userId))
-      .limit(1);
+    const found = await repo.findOneWhere('users', { id: decoded.userId });
 
     if (!found) {
       return res.status(401).json({ error: 'Usuário não encontrado.' });
@@ -100,17 +96,59 @@ export const requireAuth = async (
     req.user = toSafeUser(found);
     return next();
   } catch {
-    // Fallback: try verifying as Firebase ID Token
+    // Fallback 1: Verify as Supabase Auth JWT
+    try {
+      const sbUser = await verifySupabaseAccessToken(token);
+      if (sbUser && sbUser.email) {
+        const email = sbUser.email.toLowerCase();
+        const existing =
+          (await repo.findOneWhere('users', { uid: sbUser.id })) ||
+          (await repo.findOneWhere('users', { email }));
+
+        if (existing) {
+          if (existing.status !== 'ativo') {
+            return res.status(403).json({ error: 'Conta inativa.' });
+          }
+          if (!existing.uid) {
+            await repo.updateWhere('users', { id: existing.id }, { uid: sbUser.id });
+          }
+          req.user = toSafeUser(existing);
+          return next();
+        }
+
+        const displayName =
+          (sbUser.user_metadata?.name as string) ||
+          (sbUser.user_metadata?.full_name as string) ||
+          email.split('@')[0];
+
+        const created = await repo.upsertRow(
+          'users',
+          {
+            uid: sbUser.id,
+            name: displayName,
+            email,
+            role: 'cliente',
+            avatarUrl: (sbUser.user_metadata?.avatar_url as string) || null,
+            status: 'ativo',
+          },
+          'email'
+        );
+        req.user = toSafeUser(created);
+        return next();
+      }
+    } catch {
+      // continue to Firebase fallback
+    }
+
+    // Fallback 2: Verify as Firebase ID Token
     try {
       const fbDecoded = await adminAuth.verifyIdToken(token);
       if (!fbDecoded.email) {
         return res.status(401).json({ error: 'Token inválido.' });
       }
-      const [existing] = await db
-        .select()
-        .from(users)
-        .where(eq(users.email, fbDecoded.email.toLowerCase()))
-        .limit(1);
+      const existing = await repo.findOneWhere('users', {
+        email: fbDecoded.email.toLowerCase(),
+      });
 
       if (existing) {
         if (existing.status !== 'ativo') {
@@ -119,21 +157,18 @@ export const requireAuth = async (
         req.user = toSafeUser(existing);
         return next();
       }
-      const [created] = await db
-        .insert(users)
-        .values({
+      const created = await repo.upsertRow(
+        'users',
+        {
           uid: fbDecoded.uid,
           name: fbDecoded.name || fbDecoded.email.split('@')[0],
           email: fbDecoded.email.toLowerCase(),
           role: 'cliente',
           avatarUrl: fbDecoded.picture || null,
           status: 'ativo',
-        })
-        .onConflictDoUpdate({
-          target: users.email,
-          set: { uid: fbDecoded.uid },
-        })
-        .returning();
+        },
+        'email'
+      );
       req.user = toSafeUser(created);
       return next();
     } catch {
@@ -163,7 +198,7 @@ export async function logAudit(
   details: string
 ) {
   try {
-    await db.insert(auditLogs).values({
+    await repo.insertRow('audit_logs', {
       actorEmail: actor?.email || 'sistema',
       actorRole: actor?.role || 'system',
       action,

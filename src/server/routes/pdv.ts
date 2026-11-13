@@ -1,17 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, sql } from 'drizzle-orm';
-import { db } from '../../db/index.ts';
-import {
-  cashMovements,
-  cashRegisters,
-  financialEntries,
-  labSettings,
-  orderItems,
-  orders,
-  products,
-  users,
-} from '../../db/schema.ts';
+import { repo } from '../../db/repo.ts';
 import {
   AuthRequest,
   logAudit,
@@ -29,13 +18,12 @@ const router = Router();
 router.use(requireAuth, requireRole('caixa', 'admin'));
 
 async function getActiveRegister(operatorId: number) {
-  const [reg] = await db
-    .select()
-    .from(cashRegisters)
-    .where(and(eq(cashRegisters.operatorId, operatorId), eq(cashRegisters.status, 'aberto')))
-    .orderBy(desc(cashRegisters.openedAt))
-    .limit(1);
-  return reg || null;
+  const rows = await repo.findWhere(
+    'cash_registers',
+    { operatorId, status: 'aberto' },
+    { orderBy: 'openedAt', desc: true, limit: 1 }
+  );
+  return rows[0] || null;
 }
 
 router.get('/register/current', async (req: AuthRequest, res) => {
@@ -45,17 +33,17 @@ router.get('/register/current', async (req: AuthRequest, res) => {
       return res.json({ register: null, movements: [], sales: [], summary: {} });
     }
 
-    const movements = await db
-      .select()
-      .from(cashMovements)
-      .where(eq(cashMovements.registerId, reg.id))
-      .orderBy(desc(cashMovements.createdAt));
+    const movements = await repo.findWhere(
+      'cash_movements',
+      { registerId: reg.id },
+      { orderBy: 'createdAt', desc: true }
+    );
 
-    const sales = await db
-      .select()
-      .from(orders)
-      .where(eq(orders.registerId, reg.id))
-      .orderBy(desc(orders.createdAt));
+    const sales = await repo.findWhere(
+      'orders',
+      { registerId: reg.id },
+      { orderBy: 'createdAt', desc: true }
+    );
 
     const activeSales = sales.filter((s) => s.status !== 'Cancelado');
     const byPayment: Record<string, number> = {};
@@ -117,14 +105,11 @@ router.post('/register/open', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Valor inicial de abertura inválido.' });
     }
 
-    const [created] = await db
-      .insert(cashRegisters)
-      .values({
-        operatorId: req.user!.id,
-        status: 'aberto',
-        initialAmountCents: Math.round(initialAmountCents),
-      })
-      .returning();
+    const created = await repo.insertRow('cash_registers', {
+      operatorId: req.user!.id,
+      status: 'aberto',
+      initialAmountCents: Math.round(initialAmountCents),
+    });
 
     await logAudit(req.user, 'OPEN_REGISTER', 'pdv', `Caixa #${created.id} aberto.`);
     return res.status(201).json({ register: created });
@@ -146,16 +131,13 @@ router.post('/register/movement', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Informe tipo válido, valor positivo e motivo.' });
     }
 
-    const [movement] = await db
-      .insert(cashMovements)
-      .values({
-        registerId: reg.id,
-        operatorId: req.user!.id,
-        type,
-        amountCents: Math.round(amountCents),
-        reason,
-      })
-      .returning();
+    const movement = await repo.insertRow('cash_movements', {
+      registerId: reg.id,
+      operatorId: req.user!.id,
+      type,
+      amountCents: Math.round(amountCents),
+      reason,
+    });
 
     await logAudit(req.user, `PDV_${type.toUpperCase()}`, 'pdv', `${type}: R$ ${(amountCents / 100).toFixed(2)} - ${reason}`);
     return res.status(201).json({ movement });
@@ -175,16 +157,16 @@ router.post('/register/close', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Valor de fechamento inválido.' });
     }
 
-    const [closed] = await db
-      .update(cashRegisters)
-      .set({
+    const [closed] = await repo.updateWhere(
+      'cash_registers',
+      { id: reg.id },
+      {
         status: 'fechado',
         closingAmountCents: Math.round(closingAmountCents),
         closedAt: new Date(),
         notes,
-      })
-      .where(eq(cashRegisters.id, reg.id))
-      .returning();
+      }
+    );
 
     await logAudit(req.user, 'CLOSE_REGISTER', 'pdv', `Caixa #${reg.id} fechado.`);
     return res.json({ register: closed });
@@ -196,10 +178,7 @@ router.post('/register/close', async (req: AuthRequest, res) => {
 router.get('/products/search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim().toLowerCase();
-    const rows = await db
-      .select()
-      .from(products)
-      .where(eq(products.status, 'ativo'));
+    const rows = await repo.findWhere('products', { status: 'ativo' });
 
     const filtered = q
       ? rows.filter(
@@ -241,18 +220,16 @@ router.post('/sales', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Percentual de desconto inválido.' });
     }
 
-    const [maxDiscountSetting] = await db
-      .select()
-      .from(labSettings)
-      .where(eq(labSettings.key, 'maxCashierDiscountPercent'))
-      .limit(1);
+    const maxDiscountSetting = await repo.findOneWhere('lab_settings', {
+      key: 'maxCashierDiscountPercent',
+    });
     const maxAllowed = Number(maxDiscountSetting?.value || '15');
 
     let authorizedBy: string | null = null;
     if (discountPercent > maxAllowed) {
       const supPassword = String(req.body?.supervisorPassword || '');
-      const admins = await db.select().from(users).where(eq(users.role, 'admin'));
-      let authorizedAdmin: typeof users.$inferSelect | null = null;
+      const admins = await repo.findWhere('users', { role: 'admin' });
+      let authorizedAdmin: any = null;
       for (const a of admins) {
         if (a.passwordHash && (await bcrypt.compare(supPassword, a.passwordHash))) {
           authorizedAdmin = a;
@@ -272,7 +249,7 @@ router.post('/sales', async (req: AuthRequest, res) => {
     // Validate stock and calculate subtotal
     let subtotalCents = 0;
     const resolvedItems: Array<{
-      product: typeof products.$inferSelect;
+      product: any;
       quantity: number;
       totalCents: number;
     }> = [];
@@ -283,7 +260,7 @@ router.post('/sales', async (req: AuthRequest, res) => {
       if (!productId || Number.isNaN(quantity) || quantity <= 0) {
         return res.status(400).json({ error: 'Item ou quantidade inválida na venda.' });
       }
-      const [prod] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
+      const prod = await repo.findOneWhere('products', { id: productId });
       if (!prod || prod.status !== 'ativo') {
         return res.status(404).json({ error: 'Produto não encontrado ou inativo.' });
       }
@@ -319,35 +296,30 @@ router.post('/sales', async (req: AuthRequest, res) => {
 
     // Deduct stock
     for (const r of resolvedItems) {
-      await db
-        .update(products)
-        .set({ stock: sql`${products.stock} - ${r.quantity}` })
-        .where(eq(products.id, r.product.id));
+      await repo.adjustNumericColumn('products', r.product.id, 'stock', -r.quantity);
     }
 
     const orderNumber = `PDV-${Date.now().toString().slice(-6)}`;
-    const [createdOrder] = await db
-      .insert(orders)
-      .values({
-        orderNumber,
-        channel: 'pdv',
-        operatorId: req.user!.id,
-        registerId: reg.id,
-        customerName: sanitizeText(req.body?.customerName) || 'Consumidor Balcão',
-        customerCpf: formattedCpf,
-        status: 'Entregue',
-        subtotalCents,
-        discountCents,
-        shippingCents: 0,
-        totalCents,
-        paymentMethod: primaryMethod,
-        paymentDetails: JSON.stringify({ parts: paymentParts, totalPaidCents, changeCents }),
-        authorizedBy,
-        deliveredAt: new Date(),
-      })
-      .returning();
+    const createdOrder = await repo.insertRow('orders', {
+      orderNumber,
+      channel: 'pdv',
+      operatorId: req.user!.id,
+      registerId: reg.id,
+      customerName: sanitizeText(req.body?.customerName) || 'Consumidor Balcão',
+      customerCpf: formattedCpf,
+      status: 'Entregue',
+      subtotalCents,
+      discountCents,
+      shippingCents: 0,
+      totalCents,
+      paymentMethod: primaryMethod,
+      paymentDetails: JSON.stringify({ parts: paymentParts, totalPaidCents, changeCents }),
+      authorizedBy,
+      deliveredAt: new Date(),
+    });
 
-    await db.insert(orderItems).values(
+    await repo.insertMany(
+      'order_items',
       resolvedItems.map((r) => ({
         orderId: createdOrder.id,
         productId: r.product.id,
@@ -360,7 +332,7 @@ router.post('/sales', async (req: AuthRequest, res) => {
     );
 
     const todayStr = new Date().toISOString().slice(0, 10);
-    await db.insert(financialEntries).values({
+    await repo.insertRow('financial_entries', {
       type: 'receber',
       description: `Venda PDV ${orderNumber} (${primaryMethod})`,
       amountCents: totalCents,
@@ -399,8 +371,8 @@ router.post('/sales/:id/cancel', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Informe uma justificativa de pelo menos 5 caracteres.' });
     }
 
-    const admins = await db.select().from(users).where(eq(users.role, 'admin'));
-    let authorizedAdmin: typeof users.$inferSelect | null = null;
+    const admins = await repo.findWhere('users', { role: 'admin' });
+    let authorizedAdmin: any = null;
     for (const a of admins) {
       if (a.passwordHash && (await bcrypt.compare(adminPassword, a.passwordHash))) {
         authorizedAdmin = a;
@@ -413,7 +385,7 @@ router.post('/sales/:id/cancel', async (req: AuthRequest, res) => {
       });
     }
 
-    const [order] = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
+    const order = await repo.findOneWhere('orders', { id });
     if (!order || order.channel !== 'pdv') {
       return res.status(404).json({ error: 'Venda não encontrada.' });
     }
@@ -421,23 +393,20 @@ router.post('/sales/:id/cancel', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Venda já está cancelada.' });
     }
 
-    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+    const items = await repo.findWhere('order_items', { orderId: order.id });
     for (const item of items) {
-      await db
-        .update(products)
-        .set({ stock: sql`${products.stock} + ${item.quantity}` })
-        .where(eq(products.id, item.productId));
+      await repo.adjustNumericColumn('products', item.productId, 'stock', item.quantity);
     }
 
-    const [updated] = await db
-      .update(orders)
-      .set({
+    const [updated] = await repo.updateWhere(
+      'orders',
+      { id },
+      {
         status: 'Cancelado',
         cancellationReason: reason,
         authorizedBy: authorizedAdmin.email,
-      })
-      .where(eq(orders.id, id))
-      .returning();
+      }
+    );
 
     await logAudit(req.user, 'PDV_CANCEL_SALE', 'orders', `Venda ${order.orderNumber} cancelada com autorização de ${authorizedAdmin.email}.`);
     return res.json({ order: updated });
@@ -448,11 +417,11 @@ router.post('/sales/:id/cancel', async (req: AuthRequest, res) => {
 
 router.get('/sales/today', async (req: AuthRequest, res) => {
   try {
-    const allSales = await db
-      .select()
-      .from(orders)
-      .where(and(eq(orders.channel, 'pdv'), eq(orders.operatorId, req.user!.id)))
-      .orderBy(desc(orders.createdAt));
+    const allSales = await repo.findWhere(
+      'orders',
+      { channel: 'pdv', operatorId: req.user!.id },
+      { orderBy: 'createdAt', desc: true }
+    );
 
     const todayStr = new Date().toISOString().slice(0, 10);
     const todaySales = allSales.filter(

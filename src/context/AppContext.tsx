@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleAuthProvider } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 
 export interface UserProfile {
   id: number;
@@ -28,6 +29,13 @@ export interface LabConfig {
   labMode: boolean;
   simulatedDelayMs: number;
   maxCashierDiscountPercent: number;
+  databaseMode?: string;
+  supabase?: {
+    configured: boolean;
+    url: string | null;
+    hasServiceRole: boolean;
+    hasDatabaseUrl: boolean;
+  };
 }
 
 export interface ToastItem {
@@ -54,6 +62,7 @@ interface AppContextType {
   apiFetch: <T = any>(url: string, options?: RequestInit) => Promise<T>;
   login: (email: string, password: string) => Promise<UserProfile>;
   loginWithGoogle: () => Promise<UserProfile>;
+  loginWithSupabase: (email: string, password: string) => Promise<UserProfile>;
   register: (payload: Record<string, string>) => Promise<UserProfile>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -271,6 +280,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return data.user;
   };
 
+  const loginWithSupabase = async (email: string, password: string): Promise<UserProfile> => {
+    if (!supabase) {
+      throw new Error('Cliente Supabase não configurado no ambiente.');
+    }
+    const { data: sbData, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error || !sbData.session?.access_token) {
+      throw new Error(error?.message || 'Falha ao autenticar via Supabase.');
+    }
+    const data = await apiFetch<{ user: UserProfile; token: string }>('/api/auth/supabase', {
+      method: 'POST',
+      body: JSON.stringify({ accessToken: sbData.session.access_token }),
+    });
+    setToken(data.token);
+    try {
+      sessionStorage.setItem('na_token', data.token);
+    } catch {
+      // ignore
+    }
+    setUser(data.user);
+    return data.user;
+  };
+
   const register = async (payload: Record<string, string>): Promise<UserProfile> => {
     const data = await apiFetch<{ user: UserProfile; token: string }>('/api/auth/register', {
       method: 'POST',
@@ -291,6 +325,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await apiFetch('/api/auth/logout', { method: 'POST' });
     } catch {
       // ignore
+    }
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        // ignore
+      }
     }
     setUser(null);
     setToken(null);
@@ -325,6 +366,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         apiFetch,
         login,
         loginWithGoogle,
+        loginWithSupabase,
         register,
         logout,
         refreshUser,

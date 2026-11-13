@@ -2,10 +2,9 @@ import 'dotenv/config';
 import path from 'path';
 import express from 'express';
 import swaggerUi from 'swagger-ui-express';
-import { eq } from 'drizzle-orm';
-import { db } from './src/db/index.ts';
-import { labSettings } from './src/db/schema.ts';
+import { getActiveDatabaseMode, repo } from './src/db/repo.ts';
 import { seedDatabase } from './src/db/seed.ts';
+import { getSupabaseStatus } from './src/lib/supabase-server.ts';
 import authRoutes from './src/server/routes/auth.ts';
 import adminRoutes from './src/server/routes/admin.ts';
 import pdvRoutes from './src/server/routes/pdv.ts';
@@ -52,11 +51,7 @@ app.use('/api', async (req, _res, next) => {
     return next();
   }
   try {
-    const [setting] = await db
-      .select()
-      .from(labSettings)
-      .where(eq(labSettings.key, 'simulatedDelayMs'))
-      .limit(1);
+    const setting = await repo.findOneWhere('lab_settings', { key: 'simulatedDelayMs' });
     const delayMs = Number(setting?.value || '0');
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, 5000)));
@@ -75,7 +70,12 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', app: 'Nova Aurora Store Test Lab' });
+  res.json({
+    status: 'ok',
+    app: 'Nova Aurora Store Test Lab',
+    databaseMode: getActiveDatabaseMode(),
+    supabase: getSupabaseStatus(),
+  });
 });
 
 // API Routes
@@ -105,4 +105,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export { app };
+export default app;

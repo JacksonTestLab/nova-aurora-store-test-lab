@@ -1,20 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
-import { desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../../db/index.ts';
-import {
-  attachments,
-  auditLogs,
-  categories,
-  coupons,
-  financialEntries,
-  labSettings,
-  orderItems,
-  orders,
-  products,
-  users,
-} from '../../db/schema.ts';
+import { repo } from '../../db/repo.ts';
 import { seedDatabase } from '../../db/seed.ts';
 import {
   AuthRequest,
@@ -55,19 +42,16 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
     const startDate = req.query.startDate ? String(req.query.startDate) : null;
     const endDate = req.query.endDate ? String(req.query.endDate) : null;
 
-    const allUsers = await db.select().from(users);
-    const allProducts = await db.select().from(products);
-    const allOrders = await db.select().from(orders).orderBy(desc(orders.createdAt));
-    const allFinancial = await db.select().from(financialEntries);
+    const allUsers = await repo.listAll('users');
+    const allProducts = await repo.listAll('products');
+    const allOrders = await repo.listAll('orders', { orderBy: 'createdAt', desc: true });
+    const allFinancial = await repo.listAll('financial_entries');
 
     // Auto-detect overdue financial entries
     const todayStr = new Date().toISOString().slice(0, 10);
     for (const f of allFinancial) {
       if (f.status === 'Pendente' && f.dueDate < todayStr) {
-        await db
-          .update(financialEntries)
-          .set({ status: 'Atrasado' })
-          .where(eq(financialEntries.id, f.id));
+        await repo.updateWhere('financial_entries', { id: f.id }, { status: 'Atrasado' });
         f.status = 'Atrasado';
       }
     }
@@ -102,7 +86,7 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
       count: filteredOrders.filter((o) => o.status === st).length,
     }));
 
-    // Daily revenue chart data (last 7 entries)
+    // Daily revenue chart data (last 10 days)
     const dayMap = new Map<string, { date: string; online: number; pdv: number }>();
     for (const o of nonCancelledOrders) {
       const d = new Date(o.createdAt).toISOString().slice(0, 10);
@@ -142,7 +126,7 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
 // --- USERS (INTERNAL & ALL) ---
 router.get('/users', async (_req, res) => {
   try {
-    const rows = await db.select().from(users).orderBy(desc(users.id));
+    const rows = await repo.listAll('users', { orderBy: 'id', desc: true });
     return res.json({ users: rows.map(toSafeUser) });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar usuários.' });
@@ -170,16 +154,19 @@ router.post('/users', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'A senha deve ter no mínimo 6 caracteres.' });
     }
 
-    const [dup] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    const dup = await repo.findOneWhere('users', { email });
     if (dup) {
       return res.status(409).json({ error: 'E-mail já cadastrado no sistema.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const [created] = await db
-      .insert(users)
-      .values({ name, email, role, passwordHash, status })
-      .returning();
+    const created = await repo.insertRow('users', {
+      name,
+      email,
+      role,
+      passwordHash,
+      status,
+    });
 
     await logAudit(req.user, 'CREATE_USER', 'users', `Usuário ${email} (${role}) criado.`);
     return res.status(201).json({ user: toSafeUser(created) });
@@ -199,12 +186,7 @@ router.put('/users/:id', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Dados inválidos para atualização de usuário.' });
     }
 
-    const [updated] = await db
-      .update(users)
-      .set({ name, role, status })
-      .where(eq(users.id, id))
-      .returning();
-
+    const [updated] = await repo.updateWhere('users', { id }, { name, role, status });
     if (!updated) return res.status(404).json({ error: 'Usuário não encontrado.' });
 
     await logAudit(req.user, 'UPDATE_USER', 'users', `Usuário #${id} atualizado (${role}, ${status}).`);
@@ -222,11 +204,11 @@ router.patch('/users/:id/reset-password', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'A nova senha deve ter pelo menos 6 caracteres.' });
     }
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    const [updated] = await db
-      .update(users)
-      .set({ passwordHash, failedLoginAttempts: 0, lockedUntil: null })
-      .where(eq(users.id, id))
-      .returning();
+    const [updated] = await repo.updateWhere(
+      'users',
+      { id },
+      { passwordHash, failedLoginAttempts: 0, lockedUntil: null }
+    );
 
     if (!updated) return res.status(404).json({ error: 'Usuário não encontrado.' });
 
@@ -243,7 +225,14 @@ router.delete('/users/:id', async (req: AuthRequest, res) => {
     if (req.user?.id === id) {
       return res.status(400).json({ error: 'Você não pode excluir sua própria conta logada.' });
     }
-    const [deleted] = await db.delete(users).where(eq(users.id, id)).returning();
+    const linkedCustomerOrder = await repo.findOneWhere('orders', { customerId: id });
+    const linkedOperatorOrder = await repo.findOneWhere('orders', { operatorId: id });
+    const linkedRegister = await repo.findOneWhere('cash_registers', { operatorId: id });
+    if (linkedCustomerOrder || linkedOperatorOrder || linkedRegister) {
+      return res.status(400).json({ error: 'Não é possível excluir usuário com registros vinculados. Inative-o.' });
+    }
+
+    const [deleted] = await repo.deleteWhere('users', { id });
     if (!deleted) return res.status(404).json({ error: 'Usuário não encontrado.' });
     await logAudit(req.user, 'DELETE_USER', 'users', `Usuário ${deleted.email} removido.`);
     return res.json({ message: 'Usuário excluído com sucesso.' });
@@ -257,11 +246,11 @@ router.get('/customers', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim().toLowerCase();
     const statusFilter = String(req.query.status || '');
-    const rows = await db
-      .select()
-      .from(users)
-      .where(eq(users.role, 'cliente'))
-      .orderBy(desc(users.id));
+    const rows = await repo.findWhere(
+      'users',
+      { role: 'cliente' },
+      { orderBy: 'id', desc: true }
+    );
 
     const filtered = rows.filter((c) => {
       if (statusFilter && c.status !== statusFilter) return false;
@@ -307,31 +296,28 @@ router.post('/customers', async (req: AuthRequest, res) => {
     }
 
     const cpf = maskCPF(cpfRaw);
-    const [dupEmail] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    const dupEmail = await repo.findOneWhere('users', { email });
     if (dupEmail) return res.status(409).json({ error: 'Já existe um registro com este e-mail.' });
 
-    const [dupCpf] = await db.select().from(users).where(eq(users.cpf, cpf)).limit(1);
+    const dupCpf = await repo.findOneWhere('users', { cpf });
     if (dupCpf) return res.status(409).json({ error: 'Já existe um cliente cadastrado com este CPF.' });
 
     const defaultHash = await bcrypt.hash('Cliente@123', 10);
-    const [created] = await db
-      .insert(users)
-      .values({
-        name,
-        email,
-        cpf,
-        birthDate,
-        phone,
-        cep,
-        address,
-        number,
-        city,
-        state,
-        status,
-        role: 'cliente',
-        passwordHash: defaultHash,
-      })
-      .returning();
+    const created = await repo.insertRow('users', {
+      name,
+      email,
+      cpf,
+      birthDate,
+      phone,
+      cep,
+      address,
+      number,
+      city,
+      state,
+      status,
+      role: 'cliente',
+      passwordHash: defaultHash,
+    });
 
     await logAudit(req.user, 'CREATE_CUSTOMER', 'customers', `Cliente ${name} (${cpf}) cadastrado.`);
     return res.status(201).json({ customer: toSafeUser(created) });
@@ -362,7 +348,7 @@ router.put('/customers/:id', async (req: AuthRequest, res) => {
     if (!isValidCPF(cpfRaw)) return res.status(400).json({ error: 'CPF inválido.' });
 
     const cpf = maskCPF(cpfRaw);
-    const allUsers = await db.select().from(users);
+    const allUsers = await repo.listAll('users');
     if (allUsers.some((u) => u.id !== id && u.email === email)) {
       return res.status(409).json({ error: 'Este e-mail já está em uso por outro usuário.' });
     }
@@ -370,11 +356,11 @@ router.put('/customers/:id', async (req: AuthRequest, res) => {
       return res.status(409).json({ error: 'Este CPF já está em uso por outro cliente.' });
     }
 
-    const [updated] = await db
-      .update(users)
-      .set({ name, email, cpf, birthDate, phone, cep, address, number, city, state, status })
-      .where(eq(users.id, id))
-      .returning();
+    const [updated] = await repo.updateWhere(
+      'users',
+      { id },
+      { name, email, cpf, birthDate, phone, cep, address, number, city, state, status }
+    );
 
     if (!updated) return res.status(404).json({ error: 'Cliente não encontrado.' });
 
@@ -388,7 +374,11 @@ router.put('/customers/:id', async (req: AuthRequest, res) => {
 router.delete('/customers/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [deleted] = await db.delete(users).where(eq(users.id, id)).returning();
+    const linkedOrder = await repo.findOneWhere('orders', { customerId: id });
+    if (linkedOrder) {
+      return res.status(400).json({ error: 'Cliente possui pedidos vinculados e não pode ser excluído.' });
+    }
+    const [deleted] = await repo.deleteWhere('users', { id });
     if (!deleted) return res.status(404).json({ error: 'Cliente não encontrado.' });
     await logAudit(req.user, 'DELETE_CUSTOMER', 'customers', `Cliente ${deleted.name} excluído.`);
     return res.json({ message: 'Cliente excluído com sucesso.' });
@@ -400,7 +390,7 @@ router.delete('/customers/:id', async (req: AuthRequest, res) => {
 // --- CATEGORIES ---
 router.get('/categories', async (_req, res) => {
   try {
-    const rows = await db.select().from(categories).orderBy(categories.name);
+    const rows = await repo.listAll('categories', { orderBy: 'name' });
     return res.json({ categories: rows });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar categorias.' });
@@ -420,13 +410,15 @@ router.post('/categories', async (req: AuthRequest, res) => {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
 
-    const [dup] = await db.select().from(categories).where(eq(categories.name, name)).limit(1);
+    const dup = await repo.findOneWhere('categories', { name });
     if (dup) return res.status(409).json({ error: 'Categoria já existe.' });
 
-    const [created] = await db
-      .insert(categories)
-      .values({ name, slug: slug || `cat-${Date.now()}`, description, status })
-      .returning();
+    const created = await repo.insertRow('categories', {
+      name,
+      slug: slug || `cat-${Date.now()}`,
+      description,
+      status,
+    });
     await logAudit(req.user, 'CREATE_CATEGORY', 'categories', `Categoria ${name} criada.`);
     return res.status(201).json({ category: created });
   } catch (err) {
@@ -441,11 +433,11 @@ router.put('/categories/:id', async (req: AuthRequest, res) => {
     const description = sanitizeText(req.body?.description);
     const status = String(req.body?.status || 'ativo');
     if (!name) return res.status(400).json({ error: 'Nome da categoria é obrigatório.' });
-    const [updated] = await db
-      .update(categories)
-      .set({ name, description, status })
-      .where(eq(categories.id, id))
-      .returning();
+    const [updated] = await repo.updateWhere(
+      'categories',
+      { id },
+      { name, description, status }
+    );
     if (!updated) return res.status(404).json({ error: 'Categoria não encontrada.' });
     await logAudit(req.user, 'UPDATE_CATEGORY', 'categories', `Categoria #${id} atualizada.`);
     return res.json({ category: updated });
@@ -457,7 +449,11 @@ router.put('/categories/:id', async (req: AuthRequest, res) => {
 router.delete('/categories/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [deleted] = await db.delete(categories).where(eq(categories.id, id)).returning();
+    const linkedProduct = await repo.findOneWhere('products', { categoryId: id });
+    if (linkedProduct) {
+      return res.status(400).json({ error: 'Categoria possui produtos vinculados.' });
+    }
+    const [deleted] = await repo.deleteWhere('categories', { id });
     if (!deleted) return res.status(404).json({ error: 'Categoria não encontrada.' });
     return res.json({ message: 'Categoria excluída.' });
   } catch (err) {
@@ -472,8 +468,8 @@ router.get('/products', async (req, res) => {
     const categoryId = req.query.categoryId ? Number(req.query.categoryId) : null;
     const sort = String(req.query.sort || 'newest');
 
-    const rows = await db.select().from(products);
-    const cats = await db.select().from(categories);
+    const rows = await repo.listAll('products');
+    const cats = await repo.listAll('categories');
     const catMap = new Map(cats.map((c) => [c.id, c.name]));
 
     let list = rows.map((p) => ({
@@ -522,26 +518,23 @@ router.post('/products', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'O estoque não pode ser negativo.' });
     }
 
-    const [dup] = await db.select().from(products).where(eq(products.code, code)).limit(1);
+    const dup = await repo.findOneWhere('products', { code });
     if (dup) {
       return res.status(409).json({ error: `Já existe um produto cadastrado com o código ${code}.` });
     }
 
-    const [created] = await db
-      .insert(products)
-      .values({
-        code,
-        name,
-        description,
-        categoryId,
-        supplier,
-        priceCents: Math.round(priceCents),
-        stock: Math.round(stock),
-        minStock: Math.round(minStock),
-        imageUrl,
-        status,
-      })
-      .returning();
+    const created = await repo.insertRow('products', {
+      code,
+      name,
+      description,
+      categoryId,
+      supplier,
+      priceCents: Math.round(priceCents),
+      stock: Math.round(stock),
+      minStock: Math.round(minStock),
+      imageUrl,
+      status,
+    });
 
     await logAudit(req.user, 'CREATE_PRODUCT', 'products', `Produto ${code} - ${name} criado.`);
     return res.status(201).json({ product: created });
@@ -574,14 +567,15 @@ router.put('/products/:id', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'O estoque não pode ser negativo.' });
     }
 
-    const all = await db.select().from(products);
+    const all = await repo.listAll('products');
     if (all.some((p) => p.id !== id && p.code === code)) {
       return res.status(409).json({ error: `Código ${code} já utilizado por outro produto.` });
     }
 
-    const [updated] = await db
-      .update(products)
-      .set({
+    const [updated] = await repo.updateWhere(
+      'products',
+      { id },
+      {
         code,
         name,
         description,
@@ -592,9 +586,8 @@ router.put('/products/:id', async (req: AuthRequest, res) => {
         minStock: Math.round(minStock),
         ...(imageUrl ? { imageUrl } : {}),
         status,
-      })
-      .where(eq(products.id, id))
-      .returning();
+      }
+    );
 
     if (!updated) return res.status(404).json({ error: 'Produto não encontrado.' });
 
@@ -608,7 +601,11 @@ router.put('/products/:id', async (req: AuthRequest, res) => {
 router.delete('/products/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [deleted] = await db.delete(products).where(eq(products.id, id)).returning();
+    const linkedOrderItem = await repo.findOneWhere('order_items', { productId: id });
+    if (linkedOrderItem) {
+      return res.status(400).json({ error: 'Produto possui pedidos vinculados. Inative-o em vez de excluir.' });
+    }
+    const [deleted] = await repo.deleteWhere('products', { id });
     if (!deleted) return res.status(404).json({ error: 'Produto não encontrado.' });
     await logAudit(req.user, 'DELETE_PRODUCT', 'products', `Produto ${deleted.code} removido.`);
     return res.json({ message: 'Produto excluído com sucesso.' });
@@ -620,7 +617,7 @@ router.delete('/products/:id', async (req: AuthRequest, res) => {
 // --- COUPONS ---
 router.get('/coupons', async (_req, res) => {
   try {
-    const rows = await db.select().from(coupons).orderBy(desc(coupons.id));
+    const rows = await repo.listAll('coupons', { orderBy: 'id', desc: true });
     return res.json({ coupons: rows });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar cupons.' });
@@ -646,20 +643,17 @@ router.post('/coupons', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Cupom percentual não pode exceder 100%.' });
     }
 
-    const [dup] = await db.select().from(coupons).where(eq(coupons.code, code)).limit(1);
+    const dup = await repo.findOneWhere('coupons', { code });
     if (dup) return res.status(409).json({ error: 'Já existe um cupom com este código.' });
 
-    const [created] = await db
-      .insert(coupons)
-      .values({
-        code,
-        type,
-        value: Math.round(value),
-        expiresAt: new Date(expiresAtStr),
-        usageLimit: Math.max(1, Math.round(usageLimit)),
-        status,
-      })
-      .returning();
+    const created = await repo.insertRow('coupons', {
+      code,
+      type,
+      value: Math.round(value),
+      expiresAt: new Date(expiresAtStr),
+      usageLimit: Math.max(1, Math.round(usageLimit)),
+      status,
+    });
 
     await logAudit(req.user, 'CREATE_COUPON', 'coupons', `Cupom ${code} criado.`);
     return res.status(201).json({ coupon: created });
@@ -675,15 +669,15 @@ router.put('/coupons/:id', async (req: AuthRequest, res) => {
     const usageLimit = Number(req.body?.usageLimit ?? 100);
     const expiresAtStr = req.body?.expiresAt ? String(req.body.expiresAt) : null;
 
-    const [updated] = await db
-      .update(coupons)
-      .set({
+    const [updated] = await repo.updateWhere(
+      'coupons',
+      { id },
+      {
         status,
         usageLimit: Math.max(1, Math.round(usageLimit)),
         ...(expiresAtStr ? { expiresAt: new Date(expiresAtStr) } : {}),
-      })
-      .where(eq(coupons.id, id))
-      .returning();
+      }
+    );
 
     if (!updated) return res.status(404).json({ error: 'Cupom não encontrado.' });
     return res.json({ coupon: updated });
@@ -695,7 +689,7 @@ router.put('/coupons/:id', async (req: AuthRequest, res) => {
 router.delete('/coupons/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [deleted] = await db.delete(coupons).where(eq(coupons.id, id)).returning();
+    const [deleted] = await repo.deleteWhere('coupons', { id });
     if (!deleted) return res.status(404).json({ error: 'Cupom não encontrado.' });
     return res.json({ message: 'Cupom excluído.' });
   } catch (err) {
@@ -711,7 +705,7 @@ router.get('/orders', async (req, res) => {
     const startDate = req.query.startDate ? String(req.query.startDate) : null;
     const endDate = req.query.endDate ? String(req.query.endDate) : null;
 
-    const allOrders = await db.select().from(orders).orderBy(desc(orders.createdAt));
+    const allOrders = await repo.listAll('orders', { orderBy: 'createdAt', desc: true });
     const filtered = allOrders.filter((o) => {
       if (status && o.status !== status) return false;
       if (channel && o.channel !== channel) return false;
@@ -722,9 +716,7 @@ router.get('/orders', async (req, res) => {
     });
 
     const ids = filtered.map((o) => o.id);
-    const items = ids.length
-      ? await db.select().from(orderItems).where(inArray(orderItems.orderId, ids))
-      : [];
+    const items = await repo.findIn('order_items', 'orderId', ids);
 
     const enriched = filtered.map((o) => ({
       ...o,
@@ -748,7 +740,7 @@ router.patch('/orders/:id/status', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Status de pedido inválido.' });
     }
 
-    const [order] = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
+    const order = await repo.findOneWhere('orders', { id });
     if (!order) return res.status(404).json({ error: 'Pedido não encontrado.' });
 
     if (order.status === 'Cancelado') {
@@ -761,11 +753,7 @@ router.patch('/orders/:id/status', async (req: AuthRequest, res) => {
         return res.status(400).json({ error: 'Informe uma justificativa de pelo menos 5 caracteres para cancelar o pedido.' });
       }
       if (['Pago', 'Enviado', 'Entregue'].includes(order.status)) {
-        const [adminRecord] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, req.user!.id))
-          .limit(1);
+        const adminRecord = await repo.findOneWhere('users', { id: req.user!.id });
         const ok =
           adminRecord?.passwordHash &&
           (await bcrypt.compare(adminPassword, adminRecord.passwordHash));
@@ -777,26 +765,23 @@ router.patch('/orders/:id/status', async (req: AuthRequest, res) => {
       }
 
       // Restore stock
-      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+      const items = await repo.findWhere('order_items', { orderId: order.id });
       for (const item of items) {
-        await db
-          .update(products)
-          .set({ stock: sql`${products.stock} + ${item.quantity}` })
-          .where(eq(products.id, item.productId));
+        await repo.adjustNumericColumn('products', item.productId, 'stock', item.quantity);
       }
     }
 
-    const [updated] = await db
-      .update(orders)
-      .set({
+    const [updated] = await repo.updateWhere(
+      'orders',
+      { id },
+      {
         status: newStatus,
         ...(newStatus === 'Entregue' ? { deliveredAt: new Date() } : {}),
         ...(newStatus === 'Cancelado'
           ? { cancellationReason: reason, authorizedBy: req.user?.email }
           : {}),
-      })
-      .where(eq(orders.id, id))
-      .returning();
+      }
+    );
 
     await logAudit(
       req.user,
@@ -820,15 +805,12 @@ router.get('/financial', async (req, res) => {
     const startDate = req.query.startDate ? String(req.query.startDate) : null;
     const endDate = req.query.endDate ? String(req.query.endDate) : null;
 
-    const all = await db.select().from(financialEntries).orderBy(desc(financialEntries.id));
+    const all = await repo.listAll('financial_entries', { orderBy: 'id', desc: true });
     const todayStr = new Date().toISOString().slice(0, 10);
 
     for (const f of all) {
       if (f.status === 'Pendente' && f.dueDate < todayStr) {
-        await db
-          .update(financialEntries)
-          .set({ status: 'Atrasado' })
-          .where(eq(financialEntries.id, f.id));
+        await repo.updateWhere('financial_entries', { id: f.id }, { status: 'Atrasado' });
         f.status = 'Atrasado';
       }
     }
@@ -862,16 +844,13 @@ router.post('/financial', async (req: AuthRequest, res) => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const initialStatus = dueDate < todayStr ? 'Atrasado' : 'Pendente';
 
-    const [created] = await db
-      .insert(financialEntries)
-      .values({
-        type,
-        description,
-        amountCents: Math.round(amountCents),
-        dueDate,
-        status: initialStatus,
-      })
-      .returning();
+    const created = await repo.insertRow('financial_entries', {
+      type,
+      description,
+      amountCents: Math.round(amountCents),
+      dueDate,
+      status: initialStatus,
+    });
 
     await logAudit(req.user, 'CREATE_FINANCIAL', 'financial', `Conta (${type}) "${description}" criada.`);
     return res.status(201).json({ entry: created });
@@ -883,11 +862,7 @@ router.post('/financial', async (req: AuthRequest, res) => {
 router.post('/financial/:id/pay', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [entry] = await db
-      .select()
-      .from(financialEntries)
-      .where(eq(financialEntries.id, id))
-      .limit(1);
+    const entry = await repo.findOneWhere('financial_entries', { id });
 
     if (!entry) return res.status(404).json({ error: 'Lançamento não encontrado.' });
     if (entry.status === 'Pago') {
@@ -895,11 +870,11 @@ router.post('/financial/:id/pay', async (req: AuthRequest, res) => {
     }
 
     const paidDate = new Date().toISOString().slice(0, 10);
-    const [updated] = await db
-      .update(financialEntries)
-      .set({ status: 'Pago', paidDate })
-      .where(eq(financialEntries.id, id))
-      .returning();
+    const [updated] = await repo.updateWhere(
+      'financial_entries',
+      { id },
+      { status: 'Pago', paidDate }
+    );
 
     await logAudit(req.user, 'PAY_FINANCIAL', 'financial', `Conta #${id} marcada como paga.`);
     return res.json({ entry: updated });
@@ -911,7 +886,7 @@ router.post('/financial/:id/pay', async (req: AuthRequest, res) => {
 router.delete('/financial/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [deleted] = await db.delete(financialEntries).where(eq(financialEntries.id, id)).returning();
+    const [deleted] = await repo.deleteWhere('financial_entries', { id });
     if (!deleted) return res.status(404).json({ error: 'Lançamento não encontrado.' });
     return res.json({ message: 'Lançamento removido.' });
   } catch (err) {
@@ -922,18 +897,11 @@ router.delete('/financial/:id', async (req: AuthRequest, res) => {
 // --- ATTACHMENTS ---
 router.get('/attachments', async (_req, res) => {
   try {
-    const rows = await db
-      .select({
-        id: attachments.id,
-        filename: attachments.filename,
-        originalName: attachments.originalName,
-        mimeType: attachments.mimeType,
-        sizeBytes: attachments.sizeBytes,
-        uploadedBy: attachments.uploadedBy,
-        createdAt: attachments.createdAt,
-      })
-      .from(attachments)
-      .orderBy(desc(attachments.id));
+    const rows = await repo.listAll('attachments', {
+      orderBy: 'id',
+      desc: true,
+      selectCols: ['id', 'filename', 'originalName', 'mimeType', 'sizeBytes', 'uploadedBy', 'createdAt'],
+    });
     return res.json({ attachments: rows });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar anexos.' });
@@ -959,25 +927,24 @@ router.post('/attachments', (req: AuthRequest, res) => {
 
     try {
       const base64Data = req.file.buffer.toString('base64');
-      const [created] = await db
-        .insert(attachments)
-        .values({
-          filename: `${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
-          originalName: req.file.originalname,
-          mimeType: req.file.mimetype,
-          sizeBytes: req.file.size,
-          fileData: base64Data,
-          uploadedBy: req.user?.email || 'admin',
-        })
-        .returning({
-          id: attachments.id,
-          filename: attachments.filename,
-          originalName: attachments.originalName,
-          mimeType: attachments.mimeType,
-          sizeBytes: attachments.sizeBytes,
-          uploadedBy: attachments.uploadedBy,
-          createdAt: attachments.createdAt,
-        });
+      const createdFull = await repo.insertRow('attachments', {
+        filename: `${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
+        originalName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        sizeBytes: req.file.size,
+        fileData: base64Data,
+        uploadedBy: req.user?.email || 'admin',
+      });
+
+      const created = {
+        id: createdFull.id,
+        filename: createdFull.filename,
+        originalName: createdFull.originalName,
+        mimeType: createdFull.mimeType,
+        sizeBytes: createdFull.sizeBytes,
+        uploadedBy: createdFull.uploadedBy,
+        createdAt: createdFull.createdAt,
+      };
 
       await logAudit(req.user, 'UPLOAD_ATTACHMENT', 'attachments', `Arquivo ${req.file.originalname} enviado.`);
       return res.status(201).json({ attachment: created });
@@ -990,7 +957,7 @@ router.post('/attachments', (req: AuthRequest, res) => {
 router.get('/attachments/:id/download', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const [file] = await db.select().from(attachments).where(eq(attachments.id, id)).limit(1);
+    const file = await repo.findOneWhere('attachments', { id });
     if (!file) return res.status(404).json({ error: 'Anexo não encontrado.' });
     const buffer = Buffer.from(file.fileData, 'base64');
     res.setHeader('Content-Type', file.mimeType);
@@ -1004,7 +971,7 @@ router.get('/attachments/:id/download', async (req, res) => {
 router.delete('/attachments/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const [deleted] = await db.delete(attachments).where(eq(attachments.id, id)).returning();
+    const [deleted] = await repo.deleteWhere('attachments', { id });
     if (!deleted) return res.status(404).json({ error: 'Anexo não encontrado.' });
     await logAudit(req.user, 'DELETE_ATTACHMENT', 'attachments', `Anexo ${deleted.originalName} excluído.`);
     return res.json({ message: 'Anexo excluído com sucesso.' });
@@ -1016,7 +983,7 @@ router.delete('/attachments/:id', async (req: AuthRequest, res) => {
 // --- LAB & AUDIT ---
 router.get('/audit-logs', async (_req, res) => {
   try {
-    const rows = await db.select().from(auditLogs).orderBy(desc(auditLogs.id)).limit(100);
+    const rows = await repo.listAll('audit_logs', { orderBy: 'id', desc: true, limit: 100 });
     return res.json({ logs: rows });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar logs de auditoria.' });
@@ -1031,21 +998,20 @@ router.put('/lab-settings', async (req: AuthRequest, res) => {
       Math.max(0, Number(req.body?.maxCashierDiscountPercent ?? 15))
     );
 
-    await db
-      .insert(labSettings)
-      .values({ key: 'simulatedDelayMs', value: String(simulatedDelayMs) })
-      .onConflictDoUpdate({
-        target: labSettings.key,
-        set: { value: String(simulatedDelayMs), updatedAt: new Date() },
-      });
-
-    await db
-      .insert(labSettings)
-      .values({ key: 'maxCashierDiscountPercent', value: String(maxCashierDiscountPercent) })
-      .onConflictDoUpdate({
-        target: labSettings.key,
-        set: { value: String(maxCashierDiscountPercent), updatedAt: new Date() },
-      });
+    await repo.upsertRow(
+      'lab_settings',
+      { key: 'simulatedDelayMs', value: String(simulatedDelayMs), updatedAt: new Date() },
+      'key'
+    );
+    await repo.upsertRow(
+      'lab_settings',
+      {
+        key: 'maxCashierDiscountPercent',
+        value: String(maxCashierDiscountPercent),
+        updatedAt: new Date(),
+      },
+      'key'
+    );
 
     await logAudit(
       req.user,
