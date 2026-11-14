@@ -14,6 +14,74 @@ import { LabGuidePage } from './pages/LabGuidePage';
 const AppRouter: React.FC = () => {
   const { user, authLoading, currentPath } = useApp();
 
+  // Normalize path
+  const cleanPath = currentPath.split('?')[0];
+
+  let areaTitle = 'Autenticação';
+  let pageDocTitle = 'Nova Aurora Store';
+  let content: React.ReactNode = <LoginPage />;
+
+  if (cleanPath === '/laboratorio') {
+    areaTitle = 'Guia de Cenários QA';
+    pageDocTitle = 'Guia de Cenários QA | Nova Aurora Store';
+    content = <LabGuidePage />;
+  } else if (cleanPath === '/loja' || cleanPath.startsWith('/loja/')) {
+    areaTitle = 'Vitrine Online';
+    pageDocTitle = 'Vitrine | Nova Aurora Store';
+    content = <StorePage />;
+  } else if (cleanPath === '/admin') {
+    areaTitle = 'Administração';
+    if (!user) {
+      pageDocTitle = 'Nova Aurora Store';
+      content = <LoginPage />;
+    } else if (user.role !== 'admin' && user.role !== 'superadmin') {
+      pageDocTitle = 'Acesso Negado | Nova Aurora Store';
+      content = <AccessDeniedPage requiredRoleLabel="Administrador" />;
+    } else {
+      pageDocTitle = 'Dashboard | Nova Aurora Store';
+      content = <AdminPage />;
+    }
+  } else if (cleanPath === '/pdv') {
+    areaTitle = 'Frente de Caixa (PDV)';
+    if (!user) {
+      pageDocTitle = 'Nova Aurora Store';
+      content = <LoginPage />;
+    } else if (user.role !== 'caixa' && user.role !== 'admin' && user.role !== 'superadmin') {
+      pageDocTitle = 'Acesso Negado | Nova Aurora Store';
+      content = <AccessDeniedPage requiredRoleLabel="Operador de Caixa (PDV)" />;
+    } else {
+      pageDocTitle = 'PDV | Nova Aurora Store';
+      content = <PdvPage />;
+    }
+  } else if (cleanPath === '/login') {
+    areaTitle = 'Login';
+    pageDocTitle = 'Nova Aurora Store';
+    content = <LoginPage />;
+  } else {
+    // Root "/"
+    if (user?.role === 'admin' || user?.role === 'superadmin') {
+      areaTitle = 'Administração';
+      pageDocTitle = 'Dashboard | Nova Aurora Store';
+      content = <AdminPage />;
+    } else if (user?.role === 'caixa') {
+      areaTitle = 'Frente de Caixa (PDV)';
+      pageDocTitle = 'PDV | Nova Aurora Store';
+      content = <PdvPage />;
+    } else if (user?.role === 'cliente') {
+      areaTitle = 'Vitrine Online';
+      pageDocTitle = 'Vitrine | Nova Aurora Store';
+      content = <StorePage />;
+    } else {
+      areaTitle = 'Login';
+      pageDocTitle = 'Nova Aurora Store';
+      content = <LoginPage />;
+    }
+  }
+
+  React.useEffect(() => {
+    document.title = authLoading ? 'Nova Aurora Store' : pageDocTitle;
+  }, [authLoading, pageDocTitle]);
+
   if (authLoading) {
     return (
       <div
@@ -22,60 +90,10 @@ const AppRouter: React.FC = () => {
       >
         <div className="flex items-center gap-2.5 text-sm font-medium">
           <Loader2 className="w-5 h-5 animate-spin" />
-          <span>Carregando Nova Aurora Store Test Lab...</span>
+          <span>Carregando Nova Aurora Store...</span>
         </div>
       </div>
     );
-  }
-
-  // Normalize path
-  const cleanPath = currentPath.split('?')[0];
-
-  let areaTitle = 'Autenticação';
-  let content: React.ReactNode = <LoginPage />;
-
-  if (cleanPath === '/laboratorio') {
-    areaTitle = 'Guia de Cenários QA';
-    content = <LabGuidePage />;
-  } else if (cleanPath === '/loja' || cleanPath.startsWith('/loja/')) {
-    areaTitle = 'Vitrine Online';
-    content = <StorePage />;
-  } else if (cleanPath === '/admin') {
-    areaTitle = 'Administração';
-    if (!user) {
-      content = <LoginPage />;
-    } else if (user.role !== 'admin') {
-      content = <AccessDeniedPage requiredRoleLabel="Administrador" />;
-    } else {
-      content = <AdminPage />;
-    }
-  } else if (cleanPath === '/pdv') {
-    areaTitle = 'Frente de Caixa (PDV)';
-    if (!user) {
-      content = <LoginPage />;
-    } else if (user.role !== 'caixa' && user.role !== 'admin') {
-      content = <AccessDeniedPage requiredRoleLabel="Operador de Caixa (PDV)" />;
-    } else {
-      content = <PdvPage />;
-    }
-  } else if (cleanPath === '/login') {
-    areaTitle = 'Login';
-    content = <LoginPage />;
-  } else {
-    // Root "/"
-    if (user?.role === 'admin') {
-      areaTitle = 'Administração';
-      content = <AdminPage />;
-    } else if (user?.role === 'caixa') {
-      areaTitle = 'Frente de Caixa (PDV)';
-      content = <PdvPage />;
-    } else if (user?.role === 'cliente') {
-      areaTitle = 'Vitrine Online';
-      content = <StorePage />;
-    } else {
-      areaTitle = 'Login';
-      content = <LoginPage />;
-    }
   }
 
   return (

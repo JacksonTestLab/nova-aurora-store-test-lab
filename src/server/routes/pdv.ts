@@ -3,10 +3,12 @@ import bcrypt from 'bcryptjs';
 import { repo } from '../../db/repo.ts';
 import {
   AuthRequest,
+  isSuperAdminRecord,
   logAudit,
   requireAuth,
   requireRole,
 } from '../../middleware/auth.ts';
+import { getLocalDateYMD } from '../../utils/date.ts';
 import {
   isValidCPF,
   maskCPF,
@@ -228,7 +230,8 @@ router.post('/sales', async (req: AuthRequest, res) => {
     let authorizedBy: string | null = null;
     if (discountPercent > maxAllowed) {
       const supPassword = String(req.body?.supervisorPassword || '');
-      const admins = await repo.findWhere('users', { role: 'admin' });
+      const allUsers = await repo.listAll('users');
+      const admins = allUsers.filter((u) => u.role === 'admin' || isSuperAdminRecord(u));
       let authorizedAdmin: any = null;
       for (const a of admins) {
         if (a.passwordHash && (await bcrypt.compare(supPassword, a.passwordHash))) {
@@ -243,7 +246,7 @@ router.post('/sales', async (req: AuthRequest, res) => {
           maxAllowed,
         });
       }
-      authorizedBy = authorizedAdmin.email;
+      authorizedBy = isSuperAdminRecord(authorizedAdmin) ? 'Super Admin' : authorizedAdmin.email;
     }
 
     // Validate stock and calculate subtotal
@@ -331,7 +334,7 @@ router.post('/sales', async (req: AuthRequest, res) => {
       }))
     );
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateYMD(new Date());
     await repo.insertRow('financial_entries', {
       type: 'receber',
       description: `Venda PDV ${orderNumber} (${primaryMethod})`,
@@ -371,7 +374,8 @@ router.post('/sales/:id/cancel', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Informe uma justificativa de pelo menos 5 caracteres.' });
     }
 
-    const admins = await repo.findWhere('users', { role: 'admin' });
+    const allUsers = await repo.listAll('users');
+    const admins = allUsers.filter((u) => u.role === 'admin' || isSuperAdminRecord(u));
     let authorizedAdmin: any = null;
     for (const a of admins) {
       if (a.passwordHash && (await bcrypt.compare(adminPassword, a.passwordHash))) {
@@ -398,17 +402,18 @@ router.post('/sales/:id/cancel', async (req: AuthRequest, res) => {
       await repo.adjustNumericColumn('products', item.productId, 'stock', item.quantity);
     }
 
+    const authorizerLabel = isSuperAdminRecord(authorizedAdmin) ? 'Super Admin' : authorizedAdmin.email;
     const [updated] = await repo.updateWhere(
       'orders',
       { id },
       {
         status: 'Cancelado',
         cancellationReason: reason,
-        authorizedBy: authorizedAdmin.email,
+        authorizedBy: authorizerLabel,
       }
     );
 
-    await logAudit(req.user, 'PDV_CANCEL_SALE', 'orders', `Venda ${order.orderNumber} cancelada com autorização de ${authorizedAdmin.email}.`);
+    await logAudit(req.user, 'PDV_CANCEL_SALE', 'orders', `Venda ${order.orderNumber} cancelada com autorização de ${authorizerLabel}.`);
     return res.json({ order: updated });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao cancelar venda.' });
@@ -423,9 +428,9 @@ router.get('/sales/today', async (req: AuthRequest, res) => {
       { orderBy: 'createdAt', desc: true }
     );
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateYMD(new Date());
     const todaySales = allSales.filter(
-      (s) => new Date(s.createdAt).toISOString().slice(0, 10) === todayStr
+      (s) => getLocalDateYMD(s.createdAt) === todayStr
     );
 
     return res.json({ sales: todaySales });

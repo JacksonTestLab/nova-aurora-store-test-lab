@@ -7,6 +7,7 @@ import {
   requireAuth,
   toSafeUser,
 } from '../../middleware/auth.ts';
+import { getLocalDateYMD } from '../../utils/date.ts';
 import {
   isValidCPF,
   maskCEP,
@@ -388,7 +389,7 @@ router.post('/checkout', requireAuth, async (req: AuthRequest, res) => {
       }))
     );
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateYMD(new Date());
     await repo.insertRow('financial_entries', {
       type: 'receber',
       description: `Pedido Online ${orderNumber} — ${paymentMethod}`,
@@ -644,7 +645,7 @@ router.post('/account/password', requireAuth, async (req: AuthRequest, res) => {
 
 router.delete('/account', requireAuth, async (req: AuthRequest, res) => {
   try {
-    if (req.user!.role === 'admin') {
+    if (req.user!.role === 'admin' || req.user!.role === 'superadmin') {
       return res.status(400).json({ error: 'Contas de administrador não podem ser auto-excluídas.' });
     }
     await repo.updateWhere(

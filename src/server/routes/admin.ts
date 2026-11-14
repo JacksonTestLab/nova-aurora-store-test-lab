@@ -1,15 +1,28 @@
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { repo } from '../../db/repo.ts';
 import { seedDatabase } from '../../db/seed.ts';
+import { supabaseAdmin } from '../../lib/supabase-server.ts';
 import {
   AuthRequest,
+  isSuperAdminRecord,
   logAudit,
   requireAuth,
   requireRole,
   toSafeUser,
 } from '../../middleware/auth.ts';
+import {
+  generateBackupPayload,
+  getBackupHistory,
+  MAX_BACKUP_BYTES,
+  restoreBackupPayload,
+  validateBackupObject,
+} from '../services/backup.ts';
+import { getLocalDateYMD } from '../../utils/date.ts';
 import {
   isValidCPF,
   isValidEmail,
@@ -29,6 +42,59 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 },
 });
 
+const uploadProductImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
+
+const uploadBackupFile = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_BACKUP_BYTES },
+});
+
+const PRODUCT_IMAGE_BUCKET = 'product-images';
+const PRODUCT_IMAGE_MIMES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+const PRODUCT_IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+
+function detectImageType(buffer: Buffer): 'jpeg' | 'png' | 'webp' | null {
+  if (buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpeg';
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return 'png';
+  }
+  if (
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'webp';
+  }
+  return null;
+}
+
+async function ensureProductImagesBucket() {
+  if (!supabaseAdmin) return;
+  const { data: buckets, error: listErr } = await supabaseAdmin.storage.listBuckets();
+  if (listErr) {
+    throw new Error(`Erro ao consultar buckets do Storage: ${listErr.message}`);
+  }
+  const exists = (buckets || []).some((b) => b.name === PRODUCT_IMAGE_BUCKET);
+  if (!exists) {
+    const { error: createErr } = await supabaseAdmin.storage.createBucket(PRODUCT_IMAGE_BUCKET, {
+      public: true,
+      fileSizeLimit: 2 * 1024 * 1024,
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+    });
+    if (createErr && !String(createErr.message || '').toLowerCase().includes('already exists')) {
+      throw new Error(`Erro ao criar bucket "${PRODUCT_IMAGE_BUCKET}": ${createErr.message}`);
+    }
+  }
+}
+
 const ALLOWED_MIMES = new Set([
   'application/pdf',
   'image/png',
@@ -47,8 +113,8 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
     const allOrders = await repo.listAll('orders', { orderBy: 'createdAt', desc: true });
     const allFinancial = await repo.listAll('financial_entries');
 
-    // Auto-detect overdue financial entries
-    const todayStr = new Date().toISOString().slice(0, 10);
+    // Auto-detect overdue financial entries using local calendar date
+    const todayStr = getLocalDateYMD(new Date());
     for (const f of allFinancial) {
       if (f.status === 'Pendente' && f.dueDate < todayStr) {
         await repo.updateWhere('financial_entries', { id: f.id }, { status: 'Atrasado' });
@@ -57,13 +123,13 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
     }
 
     const filteredOrders = allOrders.filter((o) => {
-      const dateStr = new Date(o.createdAt).toISOString().slice(0, 10);
+      const dateStr = getLocalDateYMD(o.createdAt);
       if (startDate && dateStr < startDate) return false;
       if (endDate && dateStr > endDate) return false;
       return true;
     });
 
-    const customers = allUsers.filter((u) => u.role === 'cliente');
+    const customers = allUsers.filter((u) => u.role === 'cliente' && !isSuperAdminRecord(u));
     const outOfStockCount = allProducts.filter((p) => p.stock <= 0).length;
     const lowStockCount = allProducts.filter((p) => p.stock > 0 && p.stock <= p.minStock).length;
 
@@ -89,7 +155,7 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
     // Daily revenue chart data (last 10 days)
     const dayMap = new Map<string, { date: string; online: number; pdv: number }>();
     for (const o of nonCancelledOrders) {
-      const d = new Date(o.createdAt).toISOString().slice(0, 10);
+      const d = getLocalDateYMD(o.createdAt);
       const curr = dayMap.get(d) || { date: d, online: 0, pdv: 0 };
       if (o.channel === 'online') curr.online += o.totalCents;
       else curr.pdv += o.totalCents;
@@ -123,11 +189,12 @@ router.get('/dashboard', async (req: AuthRequest, res) => {
   }
 });
 
-// --- USERS (INTERNAL & ALL) ---
+// --- USERS (INTERNAL & ALL, excluding invisible superadmin) ---
 router.get('/users', async (_req, res) => {
   try {
     const rows = await repo.listAll('users', { orderBy: 'id', desc: true });
-    return res.json({ users: rows.map(toSafeUser) });
+    const visible = rows.filter((u) => !isSuperAdminRecord(u));
+    return res.json({ users: visible.map(toSafeUser) });
   } catch (err) {
     return res.status(500).json({ error: 'Erro ao listar usuários.' });
   }
@@ -149,6 +216,9 @@ router.post('/users', async (req: AuthRequest, res) => {
     }
     if (!['admin', 'caixa', 'cliente'].includes(role)) {
       return res.status(400).json({ error: 'Perfil inválido.' });
+    }
+    if (isSuperAdminRecord({ email })) {
+      return res.status(403).json({ error: 'Este endereço de e-mail é reservado.' });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'A senha deve ter no mínimo 6 caracteres.' });
@@ -178,6 +248,12 @@ router.post('/users', async (req: AuthRequest, res) => {
 router.put('/users/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
+    const target = await repo.findOneWhere('users', { id });
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado.' });
+    if (isSuperAdminRecord(target)) {
+      return res.status(403).json({ error: 'Esta conta protegida não pode ser alterada.' });
+    }
+
     const name = sanitizeText(req.body?.name);
     const role = String(req.body?.role || '');
     const status = String(req.body?.status || '');
@@ -199,6 +275,12 @@ router.put('/users/:id', async (req: AuthRequest, res) => {
 router.patch('/users/:id/reset-password', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
+    const target = await repo.findOneWhere('users', { id });
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado.' });
+    if (isSuperAdminRecord(target)) {
+      return res.status(403).json({ error: 'Esta conta protegida não pode ser alterada.' });
+    }
+
     const newPassword = String(req.body?.newPassword || '');
     if (newPassword.length < 6) {
       return res.status(400).json({ error: 'A nova senha deve ter pelo menos 6 caracteres.' });
@@ -222,6 +304,12 @@ router.patch('/users/:id/reset-password', async (req: AuthRequest, res) => {
 router.delete('/users/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
+    const target = await repo.findOneWhere('users', { id });
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado.' });
+    if (isSuperAdminRecord(target)) {
+      return res.status(403).json({ error: 'Esta conta protegida não pode ser excluída.' });
+    }
+
     if (req.user?.id === id) {
       return res.status(400).json({ error: 'Você não pode excluir sua própria conta logada.' });
     }
@@ -462,6 +550,76 @@ router.delete('/categories/:id', async (req: AuthRequest, res) => {
 });
 
 // --- PRODUCTS ---
+router.post('/products/upload-image', (req: AuthRequest, res) => {
+  uploadProductImage.single('file')(req, res, async (err: any) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: 'A imagem excede o tamanho máximo permitido de 2 MB.',
+        });
+      }
+      return res.status(400).json({ error: 'Falha ao processar upload da foto do produto.' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'Selecione uma imagem JPG, PNG ou WEBP para enviar.' });
+    }
+
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    const mime = String(req.file.mimetype || '').toLowerCase();
+    const detected = detectImageType(req.file.buffer);
+    if (!PRODUCT_IMAGE_MIMES.has(mime) || (ext && !PRODUCT_IMAGE_EXTS.has(ext)) || !detected) {
+      return res.status(400).json({
+        error: 'Formato de arquivo inválido. Envie apenas imagens JPG, PNG ou WEBP de até 2 MB.',
+      });
+    }
+
+    const finalExt = detected === 'jpeg' ? 'jpg' : detected;
+    const contentType = detected === 'jpeg' ? 'image/jpeg' : `image/${detected}`;
+    const objectName = `products/${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${finalExt}`;
+
+    try {
+      if (supabaseAdmin) {
+        await ensureProductImagesBucket();
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from(PRODUCT_IMAGE_BUCKET)
+          .upload(objectName, req.file.buffer, {
+            contentType,
+            upsert: false,
+            cacheControl: '3600',
+          });
+        if (uploadError) {
+          throw new Error(uploadError.message);
+        }
+        const { data: publicData } = supabaseAdmin.storage
+          .from(PRODUCT_IMAGE_BUCKET)
+          .getPublicUrl(objectName);
+
+        await logAudit(
+          req.user,
+          'UPLOAD_PRODUCT_IMAGE',
+          'products',
+          `Foto do produto enviada para Storage (${objectName}).`
+        );
+        return res.status(201).json({ imageUrl: publicData.publicUrl, storagePath: objectName });
+      }
+
+      // Fallback when running locally without Supabase keys
+      const localDir = path.join(process.cwd(), 'public', 'uploads', 'products');
+      fs.mkdirSync(localDir, { recursive: true });
+      const localFilename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${finalExt}`;
+      fs.writeFileSync(path.join(localDir, localFilename), req.file.buffer);
+      const localUrl = `/uploads/products/${localFilename}`;
+      await logAudit(req.user, 'UPLOAD_PRODUCT_IMAGE', 'products', `Foto salva localmente (${localUrl}).`);
+      return res.status(201).json({ imageUrl: localUrl, storagePath: localUrl });
+    } catch (uploadErr: any) {
+      console.error('Product image upload error:', uploadErr);
+      return res.status(500).json({
+        error: uploadErr?.message || 'Erro ao armazenar a foto do produto no Supabase Storage.',
+      });
+    }
+  });
+});
+
 router.get('/products', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim().toLowerCase();
@@ -505,8 +663,17 @@ router.post('/products', async (req: AuthRequest, res) => {
     const priceCents = Number(req.body?.priceCents);
     const stock = Number(req.body?.stock ?? 0);
     const minStock = Number(req.body?.minStock ?? 5);
-    const imageUrl = sanitizeText(req.body?.imageUrl) || '/src/assets/images/prod_headphones_1794559983453.jpg';
+    const rawImageUrl = req.body?.imageUrl === null || req.body?.imageUrl === undefined
+      ? ''
+      : String(req.body.imageUrl).trim();
     const status = String(req.body?.status || 'ativo');
+
+    if (rawImageUrl.startsWith('data:image/')) {
+      return res.status(400).json({
+        error: 'Imagens em base64 não são permitidas no banco. Faça o upload do arquivo da foto.',
+      });
+    }
+    const imageUrl = rawImageUrl ? sanitizeText(rawImageUrl) : null;
 
     if (!code || !name || !description || !supplier) {
       return res.status(400).json({ error: 'Código, nome, descrição e fornecedor são obrigatórios.' });
@@ -554,8 +721,17 @@ router.put('/products/:id', async (req: AuthRequest, res) => {
     const priceCents = Number(req.body?.priceCents);
     const stock = Number(req.body?.stock ?? 0);
     const minStock = Number(req.body?.minStock ?? 5);
-    const imageUrl = sanitizeText(req.body?.imageUrl);
+    const hasImageUrlField = Object.prototype.hasOwnProperty.call(req.body || {}, 'imageUrl');
+    const rawImageUrl = req.body?.imageUrl === null || req.body?.imageUrl === undefined
+      ? ''
+      : String(req.body.imageUrl).trim();
     const status = String(req.body?.status || 'ativo');
+
+    if (rawImageUrl.startsWith('data:image/')) {
+      return res.status(400).json({
+        error: 'Imagens em base64 não são permitidas no banco. Faça o upload do arquivo da foto.',
+      });
+    }
 
     if (!code || !name || !description || !supplier) {
       return res.status(400).json({ error: 'Campos obrigatórios não preenchidos.' });
@@ -572,6 +748,10 @@ router.put('/products/:id', async (req: AuthRequest, res) => {
       return res.status(409).json({ error: `Código ${code} já utilizado por outro produto.` });
     }
 
+    const imageUpdate = hasImageUrlField
+      ? { imageUrl: rawImageUrl ? sanitizeText(rawImageUrl) : null }
+      : {};
+
     const [updated] = await repo.updateWhere(
       'products',
       { id },
@@ -584,7 +764,7 @@ router.put('/products/:id', async (req: AuthRequest, res) => {
         priceCents: Math.round(priceCents),
         stock: Math.round(stock),
         minStock: Math.round(minStock),
-        ...(imageUrl ? { imageUrl } : {}),
+        ...imageUpdate,
         status,
       }
     );
@@ -709,7 +889,7 @@ router.get('/orders', async (req, res) => {
     const filtered = allOrders.filter((o) => {
       if (status && o.status !== status) return false;
       if (channel && o.channel !== channel) return false;
-      const d = new Date(o.createdAt).toISOString().slice(0, 10);
+      const d = getLocalDateYMD(o.createdAt);
       if (startDate && d < startDate) return false;
       if (endDate && d > endDate) return false;
       return true;
@@ -806,7 +986,7 @@ router.get('/financial', async (req, res) => {
     const endDate = req.query.endDate ? String(req.query.endDate) : null;
 
     const all = await repo.listAll('financial_entries', { orderBy: 'id', desc: true });
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateYMD(new Date());
 
     for (const f of all) {
       if (f.status === 'Pendente' && f.dueDate < todayStr) {
@@ -841,7 +1021,7 @@ router.post('/financial', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Tipo, descrição, valor positivo e vencimento são obrigatórios.' });
     }
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getLocalDateYMD(new Date());
     const initialStatus = dueDate < todayStr ? 'Atrasado' : 'Pendente';
 
     const created = await repo.insertRow('financial_entries', {
@@ -869,7 +1049,7 @@ router.post('/financial/:id/pay', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Pagamento duplicado bloqueado: esta conta já foi quitada.' });
     }
 
-    const paidDate = new Date().toISOString().slice(0, 10);
+    const paidDate = getLocalDateYMD(new Date());
     const [updated] = await repo.updateWhere(
       'financial_entries',
       { id },
@@ -1026,14 +1206,122 @@ router.put('/lab-settings', async (req: AuthRequest, res) => {
   }
 });
 
-router.post('/reset-demo', async (req: AuthRequest, res) => {
+router.post('/reset-demo', requireRole('superadmin'), async (req: AuthRequest, res) => {
   try {
-    const result = await seedDatabase(true);
-    await logAudit(req.user, 'RESET_DEMO', 'system', 'Dados de demonstração restaurados pelo administrador.');
-    return res.json(result);
+    const result = await seedDatabase(true, req.user!.id);
+    await logAudit(req.user, 'RESET_DEMO', 'system', 'Dados de demonstração restaurados.');
+    const refreshed = await repo.findOneWhere('users', { id: req.user!.id });
+    return res.json({
+      ...result,
+      user: refreshed ? toSafeUser(refreshed) : req.user,
+    });
   } catch (err) {
     console.error('Reset demo error:', err);
     return res.status(500).json({ error: 'Erro ao restaurar dados de demonstração.' });
+  }
+});
+
+// --- BACKUP & RESTORE (.json, Super Admin exclusive actions) ---
+router.get('/backups', async (_req, res) => {
+  try {
+    const backups = await getBackupHistory();
+    return res.json({ backups });
+  } catch (err) {
+    return res.status(500).json({ error: 'Erro ao listar histórico de backups.' });
+  }
+});
+
+router.post('/backups/export', requireRole('superadmin'), async (req: AuthRequest, res) => {
+  try {
+    const { filename, payload, historyEntry } = await generateBackupPayload(req.user, 'manual');
+    await logAudit(
+      req.user,
+      'EXPORT_BACKUP',
+      'system',
+      `Backup gerado (${filename}, ${historyEntry.sizeBytes} bytes).`
+    );
+    return res.json({ filename, payload, historyEntry });
+  } catch (err) {
+    console.error('Backup export error:', err);
+    return res.status(500).json({ error: 'Erro ao gerar backup do sistema.' });
+  }
+});
+
+router.post('/backups/validate', requireRole('superadmin'), (req: AuthRequest, res) => {
+  const isMultipart = String(req.headers['content-type'] || '').includes('multipart/form-data');
+  if (!isMultipart) {
+    const rawPayload = req.body?.payload;
+    const rawSizeBytes = Number(req.body?.rawSizeBytes || 0) || undefined;
+    const validation = validateBackupObject(rawPayload, rawSizeBytes);
+    if (!validation.valid) {
+      return res.status(400).json({ valid: false, error: validation.error });
+    }
+    return res.json({
+      valid: true,
+      metadata: validation.payload.metadata,
+      counts: validation.payload.metadata.counts,
+    });
+  }
+
+  uploadBackupFile.single('file')(req, res, (err: any) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ valid: false, error: 'Arquivo de backup excede o limite de 10 MB.' });
+      }
+      return res.status(400).json({ valid: false, error: 'Falha ao ler arquivo de backup.' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ valid: false, error: 'Selecione um arquivo .json de backup.' });
+    }
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    if (ext !== '.json') {
+      return res.status(400).json({ valid: false, error: 'Formato inválido. Selecione um arquivo .json.' });
+    }
+    try {
+      const parsed = JSON.parse(req.file.buffer.toString('utf8'));
+      const validation = validateBackupObject(parsed, req.file.size);
+      if (!validation.valid) {
+        return res.status(400).json({ valid: false, error: validation.error });
+      }
+      return res.json({
+        valid: true,
+        metadata: validation.payload.metadata,
+        counts: validation.payload.metadata.counts,
+      });
+    } catch {
+      return res.status(400).json({ valid: false, error: 'Arquivo JSON inválido ou malformado.' });
+    }
+  });
+});
+
+router.post('/backups/restore', requireRole('superadmin'), async (req: AuthRequest, res) => {
+  try {
+    const confirmationText = String(req.body?.confirmationText || '').trim();
+    if (confirmationText !== 'RESTAURAR') {
+      return res.status(400).json({
+        error: 'Confirmação inválida. Digite exatamente "RESTAURAR" para prosseguir.',
+      });
+    }
+
+    const rawPayload = req.body?.payload;
+    const validation = validateBackupObject(rawPayload);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const result = await restoreBackupPayload(validation.payload, req.user!);
+    const refreshed = await repo.findOneWhere('users', { id: req.user!.id });
+
+    return res.json({
+      ...result,
+      message: 'Backup restaurado com sucesso.',
+      user: refreshed ? toSafeUser(refreshed) : req.user,
+    });
+  } catch (err) {
+    console.error('Backup restore error:', err);
+    return res.status(500).json({
+      error: 'Erro ao restaurar backup. O sistema preservou o estado anterior.',
+    });
   }
 });
 

@@ -1,5 +1,5 @@
 -- =============================================================================
--- Nova Aurora Store Test Lab - Supabase PostgreSQL Schema & RLS
+-- Nova Aurora Store - Supabase PostgreSQL Schema & RLS
 -- =============================================================================
 
 -- 1. Tabelas principais
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS public.users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT,
-  role TEXT NOT NULL DEFAULT 'cliente' CHECK (role IN ('admin', 'caixa', 'cliente')),
+  role TEXT NOT NULL DEFAULT 'cliente' CHECK (role IN ('superadmin', 'admin', 'caixa', 'cliente')),
   cpf TEXT UNIQUE,
   phone TEXT,
   birth_date TEXT,
@@ -248,7 +248,17 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT COALESCE(public.current_app_user_role() = 'admin', FALSE);
+  SELECT COALESCE(public.current_app_user_role() IN ('admin', 'superadmin'), FALSE);
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_superadmin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(public.current_app_user_role() = 'superadmin', FALSE);
 $$;
 
 CREATE OR REPLACE FUNCTION public.is_cashier_or_admin()
@@ -258,7 +268,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT COALESCE(public.current_app_user_role() IN ('admin', 'caixa'), FALSE);
+  SELECT COALESCE(public.current_app_user_role() IN ('superadmin', 'admin', 'caixa'), FALSE);
 $$;
 
 -- 4. Sincronização automática auth.users -> public.users
@@ -538,3 +548,20 @@ CREATE POLICY lab_settings_admin_all ON public.lab_settings
   FOR ALL TO authenticated
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
+
+-- 7. Migração idempotente para bases existentes (libera role 'superadmin' + bucket product-images)
+ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE public.users ADD CONSTRAINT users_role_check CHECK (role IN ('superadmin', 'admin', 'caixa', 'cliente'));
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'product-images',
+  'product-images',
+  true,
+  2097152,
+  ARRAY['image/jpeg', 'image/png', 'image/webp']
+)
+ON CONFLICT (id) DO UPDATE
+SET public = EXCLUDED.public,
+    file_size_limit = EXCLUDED.file_size_limit,
+    allowed_mime_types = EXCLUDED.allowed_mime_types;

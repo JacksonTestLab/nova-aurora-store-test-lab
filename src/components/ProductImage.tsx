@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Package } from 'lucide-react';
 
 interface ProductImageProps {
@@ -13,6 +13,10 @@ export const ProductImage: React.FC<ProductImageProps> = ({
   className = 'w-full h-full object-cover',
 }) => {
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
 
   if (!src || failed) {
     return (

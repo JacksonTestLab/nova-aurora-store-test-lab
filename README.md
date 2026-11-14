@@ -1,4 +1,4 @@
-# 🛒 Nova Aurora Store Test Lab
+# 🛒 Nova Aurora Store
 
 ![Status](https://img.shields.io/badge/status-em%20constru%C3%A7%C3%A3o-orange?style=for-the-badge)
 ![Google AI Studio](https://img.shields.io/badge/Google%20AI%20Studio-4285F4?style=for-the-badge&logo=google&logoColor=white)
@@ -10,7 +10,7 @@
 
 ## 📖 Sobre o projeto
 
-O **Nova Aurora Store Test Lab** é um e-commerce fictício criado como **ambiente de laboratório para estudos de QA**. A ideia é que o time possa praticar testes manuais e automatizados em uma aplicação com regras de negócio reais, usando ferramentas como Selenium WebDriver, Java, JUnit 5, Cucumber, Playwright, Cypress e Postman.
+O **Nova Aurora Store** é um e-commerce fictício criado como **ambiente de laboratório para estudos de QA**. A ideia é que o time possa praticar testes manuais e automatizados em uma aplicação com regras de negócio reais, usando ferramentas como Selenium WebDriver, Java, JUnit 5, Cucumber, Playwright, Cypress e Postman.
 
 Todos os dados são **fictícios**. Este projeto é apenas para fins educacionais.
 

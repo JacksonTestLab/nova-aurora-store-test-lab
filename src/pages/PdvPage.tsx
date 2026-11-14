@@ -19,6 +19,8 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { ProductImage } from '../components/ProductImage';
+import { formatDateTimeBR } from '../utils/date';
 import {
   formatBRL,
   isValidCPF,
@@ -46,6 +48,10 @@ export const PdvPage: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const discountInputRef = useRef<HTMLInputElement>(null);
   const paymentInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    document.title = 'PDV | Nova Aurora Store';
+  }, []);
 
   const [registerData, setRegisterData] = useState<any>(null);
   const [loadingReg, setLoadingReg] = useState(true);
@@ -582,19 +588,24 @@ export const PdvPage: React.FC = () => {
                     onClick={() => addProductToCart(p)}
                     disabled={p.stock <= 0}
                     data-testid={`pdv-quick-product-${p.code}`}
-                    className={`min-h-[52px] p-2.5 rounded-lg border text-left flex items-center justify-between gap-2 transition-colors ${
+                    className={`min-h-[56px] p-2.5 rounded-lg border text-left flex items-center justify-between gap-2.5 transition-colors ${
                       p.stock <= 0
                         ? 'border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 opacity-50 cursor-not-allowed'
                         : 'border-slate-200 dark:border-slate-800 hover:border-indigo-500 bg-slate-50 dark:bg-slate-950'
                     }`}
                   >
-                    <div className="min-w-0">
-                      <p className="text-xs font-mono font-bold text-indigo-600 dark:text-teal-400">
-                        {p.code} · Est: {p.stock}
-                      </p>
-                      <p className="text-xs font-semibold truncate text-slate-900 dark:text-white">
-                        {p.name}
-                      </p>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-10 h-10 rounded-md overflow-hidden bg-slate-200 dark:bg-slate-800 shrink-0">
+                        <ProductImage src={p.imageUrl} alt={p.name} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-mono font-bold text-indigo-600 dark:text-teal-400">
+                          {p.code} · Est: {p.stock}
+                        </p>
+                        <p className="text-xs font-semibold truncate text-slate-900 dark:text-white">
+                          {p.name}
+                        </p>
+                      </div>
                     </div>
                     <span className="font-mono text-xs font-bold tabular-nums shrink-0">
                       {formatBRL(p.priceCents)}
@@ -1083,6 +1094,7 @@ export const PdvPage: React.FC = () => {
                 <thead className="bg-slate-50 dark:bg-slate-800">
                   <tr>
                     <th className="px-3 py-2">Nº Venda</th>
+                    <th className="px-3 py-2">Data/Hora</th>
                     <th className="px-3 py-2">Pagamento</th>
                     <th className="px-3 py-2 text-right">Total</th>
                     <th className="px-3 py-2">Status</th>
@@ -1093,6 +1105,7 @@ export const PdvPage: React.FC = () => {
                   {(registerData?.sales || []).map((s: any) => (
                     <tr key={s.id}>
                       <td className="px-3 py-2.5 font-mono font-bold">{s.orderNumber}</td>
+                      <td className="px-3 py-2.5 font-mono whitespace-nowrap">{formatDateTimeBR(s.createdAt)}</td>
                       <td className="px-3 py-2.5">{s.paymentMethod}</td>
                       <td className="px-3 py-2.5 text-right font-mono tabular-nums font-semibold">
                         {formatBRL(s.totalCents)}
@@ -1180,9 +1193,10 @@ export const PdvPage: React.FC = () => {
         >
           <div className="w-full max-w-sm bg-white text-slate-900 rounded-xl border border-slate-300 shadow-2xl p-6 space-y-4 font-mono text-xs">
             <div className="text-center border-b border-dashed border-slate-300 pb-3 space-y-1">
-              <p className="font-bold text-sm">NOVA AURORA STORE TEST LAB</p>
+              <p className="font-bold text-sm">NOVA AURORA STORE</p>
               <p>COMPROVANTE NÃO FISCAL DE LABORATÓRIO</p>
               <p>Pedido: {receiptData.order.orderNumber}</p>
+              <p>Data/Hora: {formatDateTimeBR(receiptData.order.createdAt)}</p>
               {receiptData.order.customerCpf && <p>CPF: {receiptData.order.customerCpf}</p>}
             </div>
 

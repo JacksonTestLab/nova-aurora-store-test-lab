@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { getActiveDatabaseMode, repo } from '../../db/repo.ts';
 import {
   AuthRequest,
+  isSuperAdminRecord,
   JWT_SECRET,
   logAudit,
   requireAuth,
@@ -42,7 +43,7 @@ router.get('/config', async (_req, res) => {
     const settings = await repo.listAll('lab_settings');
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
     return res.json({
-      appName: 'Nova Aurora Store Test Lab',
+      appName: 'Nova Aurora Store',
       version: '1.4.0',
       labMode: process.env.LAB_MODE !== 'false',
       simulatedDelayMs: Number(map.simulatedDelayMs || '0'),
@@ -53,7 +54,7 @@ router.get('/config', async (_req, res) => {
   } catch (err) {
     console.error('Config error:', err);
     return res.json({
-      appName: 'Nova Aurora Store Test Lab',
+      appName: 'Nova Aurora Store',
       version: '1.4.0',
       labMode: process.env.LAB_MODE !== 'false',
       simulatedDelayMs: 0,
@@ -147,18 +148,19 @@ router.post('/auth/login', async (req, res) => {
       { failedLoginAttempts: 0, lockedUntil: null }
     );
 
+    const effectiveRole = isSuperAdminRecord(user) ? 'superadmin' : user.role;
     const token = jwt.sign(
-      { userId: user.id, role: user.role, email: user.email },
+      { userId: user.id, role: effectiveRole, email: user.email },
       JWT_SECRET,
       { expiresIn: '8h' }
     );
 
     setAuthCookie(res, token);
     await logAudit(
-      { email: user.email, role: user.role },
+      { email: user.email, role: effectiveRole },
       'LOGIN_SUCCESS',
       'auth',
-      `Login realizado com sucesso (${user.role}).`
+      `Login realizado com sucesso (${effectiveRole}).`
     );
 
     return res.json({ user: toSafeUser(user), token });

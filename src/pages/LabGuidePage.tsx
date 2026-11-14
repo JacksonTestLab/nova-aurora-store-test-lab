@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, ExternalLink, Search, CheckSquare } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
@@ -94,6 +94,10 @@ export const LabGuidePage: React.FC = () => {
   const { navigate } = useApp();
   const [filterModule, setFilterModule] = useState('Todos');
   const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    document.title = 'Guia de Cenários QA | Nova Aurora Store';
+  }, []);
 
   const modules = ['Todos', 'Autenticação & RBAC', 'Admin', 'PDV', 'Loja'];
   const filtered = SCENARIOS.filter((s) => {

@@ -32,13 +32,28 @@ export interface AuthRequest extends Request {
   user?: SafeUser;
 }
 
+export function getSuperAdminEmail(): string {
+  return (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
+}
+
+export function isSuperAdminRecord(u: { role?: string | null; email?: string | null } | null | undefined): boolean {
+  if (!u) return false;
+  if (u.role === 'superadmin') return true;
+  const envEmail = getSuperAdminEmail();
+  if (envEmail && String(u.email || '').trim().toLowerCase() === envEmail) {
+    return true;
+  }
+  return false;
+}
+
 export function toSafeUser(u: typeof users.$inferSelect | any): SafeUser {
+  const effectiveRole = isSuperAdminRecord(u) ? 'superadmin' : u.role;
   return {
     id: u.id,
     uid: u.uid ?? null,
     name: u.name,
     email: u.email,
-    role: u.role,
+    role: effectiveRole,
     cpf: u.cpf ?? null,
     phone: u.phone ?? null,
     birthDate: u.birthDate ?? null,
@@ -84,8 +99,11 @@ export const requireAuth = async (
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: number; role: string };
-    const found = await repo.findOneWhere('users', { id: decoded.userId });
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: number; role: string; email?: string };
+    let found = await repo.findOneWhere('users', { id: decoded.userId });
+    if (!found && decoded.email) {
+      found = await repo.findOneWhere('users', { email: decoded.email.toLowerCase() });
+    }
 
     if (!found) {
       return res.status(401).json({ error: 'Usuário não encontrado.' });
@@ -182,7 +200,16 @@ export const requireRole = (...roles: string[]) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Não autenticado.' });
     }
-    if (!roles.includes(req.user.role)) {
+    const isAllowed =
+      roles.includes(req.user.role) ||
+      (req.user.role === 'superadmin' && roles.includes('admin'));
+
+    if (!isAllowed) {
+      if (roles.length === 1 && roles[0] === 'superadmin') {
+        return res.status(403).json({
+          error: 'Ação disponível apenas para o Super Admin.',
+        });
+      }
       return res.status(403).json({
         error: 'Acesso negado: seu perfil não possui permissão para esta operação.',
       });
@@ -198,9 +225,10 @@ export async function logAudit(
   details: string
 ) {
   try {
+    const isSuper = isSuperAdminRecord(actor);
     await repo.insertRow('audit_logs', {
-      actorEmail: actor?.email || 'sistema',
-      actorRole: actor?.role || 'system',
+      actorEmail: isSuper ? 'Super Admin' : actor?.email || 'sistema',
+      actorRole: isSuper ? 'superadmin' : actor?.role || 'system',
       action,
       entity,
       details,

@@ -8,7 +8,7 @@ export const AccessDeniedPage: React.FC<{ requiredRoleLabel?: string }> = ({
   const { user, navigate } = useApp();
 
   const homePath =
-    user?.role === 'admin'
+    user?.role === 'admin' || user?.role === 'superadmin'
       ? '/admin'
       : user?.role === 'caixa'
       ? '/pdv'

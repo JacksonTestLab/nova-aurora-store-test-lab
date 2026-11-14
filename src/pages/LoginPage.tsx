@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Eye,
   EyeOff,
@@ -58,6 +58,10 @@ export const LoginPage: React.FC = () => {
   const { config, login, loginWithGoogle, register, apiFetch, navigate, addToast } = useApp();
   const [tab, setTab] = useState<'login' | 'register' | 'recover'>('login');
 
+  useEffect(() => {
+    document.title = 'Nova Aurora Store';
+  }, []);
+
   // Login state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -99,7 +103,7 @@ export const LoginPage: React.FC = () => {
   };
 
   const redirectByRole = (role: string) => {
-    if (role === 'admin') navigate('/admin');
+    if (role === 'admin' || role === 'superadmin') navigate('/admin');
     else if (role === 'caixa') navigate('/pdv');
     else navigate('/loja');
   };
@@ -577,7 +581,7 @@ export const LoginPage: React.FC = () => {
                   Contas para Testes
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  Preencha os campos de login automaticamente para testar cada perfil sem enviar o formulário.
+                  Clique em <strong className="font-semibold text-slate-700 dark:text-slate-300">Preencher credenciais</strong> para inserir automaticamente o E-mail e a Senha do perfil selecionado.
                 </p>
               </div>
             </div>

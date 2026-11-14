@@ -14,6 +14,7 @@ import {
 import { useApp } from '../context/AppContext';
 
 const ROLE_LABELS: Record<string, string> = {
+  superadmin: 'Super Admin',
   admin: 'Administrador',
   caixa: 'Caixa',
   cliente: 'Cliente',
@@ -63,7 +64,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
     setMenuOpen(false);
     if (user?.role === 'cliente') {
       navigate('/loja?tab=conta');
-    } else if (user?.role === 'admin') {
+    } else if (user?.role === 'admin' || user?.role === 'superadmin') {
       navigate('/admin?tab=usuarios');
     } else {
       navigate('/laboratorio');
@@ -106,7 +107,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
             <BookOpen className="w-3 h-3" />
             <span>Cenários QA</span>
           </button>
-          {user?.role === 'admin' && currentPath !== '/admin' && (
+          {(user?.role === 'admin' || user?.role === 'superadmin') && currentPath !== '/admin' && (
             <button
               type="button"
               onClick={() => navigate('/admin')}
@@ -116,7 +117,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
               <span>Admin</span>
             </button>
           )}
-          {(user?.role === 'caixa' || user?.role === 'admin') &&
+          {(user?.role === 'caixa' || user?.role === 'admin' || user?.role === 'superadmin') &&
             currentPath !== '/pdv' && (
               <button
                 type="button"
@@ -150,7 +151,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
               type="button"
               onClick={() =>
                 navigate(
-                  user?.role === 'admin'
+                  user?.role === 'admin' || user?.role === 'superadmin'
                     ? '/admin'
                     : user?.role === 'caixa'
                     ? '/pdv'
@@ -163,7 +164,7 @@ export const TopShell: React.FC<TopShellProps> = ({ areaTitle, rightSlot }) => {
               <span className="w-7 h-7 rounded-lg bg-indigo-600 text-white inline-flex items-center justify-center text-xs font-bold">
                 NA
               </span>
-              <span>Nova Aurora</span>
+              <span>Nova Aurora Store</span>
             </button>
             {areaTitle && (
               <span className="hidden md:inline-block text-xs text-slate-500 dark:text-slate-400 truncate">

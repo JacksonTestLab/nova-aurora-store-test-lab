@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from './index.ts';
 import * as schema from './schema.ts';
 import { supabaseAdmin } from '../lib/supabase-server.ts';
+import { normalizeUtcTimestamp } from '../utils/date.ts';
 
 const TABLE_MAP = {
   users: schema.users,
@@ -23,6 +24,27 @@ const TABLE_MAP = {
 } as const;
 
 export type TableName = keyof typeof TABLE_MAP;
+
+const TIMESTAMP_FIELDS = new Set([
+  'lockedUntil',
+  'createdAt',
+  'expiresAt',
+  'openedAt',
+  'closedAt',
+  'deliveredAt',
+  'updatedAt',
+]);
+
+function normalizeRowTimestamps<T = any>(row: T): T {
+  if (!row || typeof row !== 'object') return row;
+  const out: Record<string, any> = { ...(row as any) };
+  for (const key of Object.keys(out)) {
+    if (TIMESTAMP_FIELDS.has(key) && out[key] !== null && out[key] !== undefined) {
+      out[key] = normalizeUtcTimestamp(out[key]);
+    }
+  }
+  return out as T;
+}
 
 export const isSupabaseRestBackend = (): boolean =>
   Boolean(supabaseAdmin) && !process.env.SUPABASE_DB_URL;
@@ -56,7 +78,7 @@ function toCamelRecord<T = any>(row: Record<string, any> | null | undefined): T 
   for (const [k, v] of Object.entries(row)) {
     out[snakeToCamel(k)] = v;
   }
-  return out as T;
+  return normalizeRowTimestamps<T>(out as T);
 }
 
 function buildDrizzleWhere(table: any, filters: Record<string, any>) {
@@ -118,7 +140,7 @@ export const repo = {
     if (options?.limit) {
       q = q.limit(options.limit);
     }
-    return (await q) as T[];
+    return ((await q) as T[]).map((r) => normalizeRowTimestamps<T>(r));
   },
 
   async findWhere<T = any>(
@@ -150,7 +172,7 @@ export const repo = {
     if (options?.limit) {
       q = q.limit(options.limit);
     }
-    return (await q) as T[];
+    return ((await q) as T[]).map((r) => normalizeRowTimestamps<T>(r));
   },
 
   async findOneWhere<T = any>(
@@ -177,7 +199,9 @@ export const repo = {
     }
 
     const table: any = TABLE_MAP[tableName];
-    return (await db.select().from(table).where(inArray(table[col], values))) as T[];
+    return ((await db.select().from(table).where(inArray(table[col], values))) as T[]).map((r) =>
+      normalizeRowTimestamps<T>(r)
+    );
   },
 
   async insertRow<T = any>(tableName: TableName, data: Record<string, any>): Promise<T> {
@@ -193,7 +217,7 @@ export const repo = {
 
     const table: any = TABLE_MAP[tableName];
     const rows = (await db.insert(table).values(data).returning()) as any[];
-    return rows[0] as T;
+    return normalizeRowTimestamps<T>(rows[0] as T);
   },
 
   async insertMany<T = any>(tableName: TableName, rows: Record<string, any>[]): Promise<T[]> {
@@ -208,7 +232,9 @@ export const repo = {
     }
 
     const table: any = TABLE_MAP[tableName];
-    return (await db.insert(table).values(rows).returning()) as T[];
+    return ((await db.insert(table).values(rows).returning()) as T[]).map((r) =>
+      normalizeRowTimestamps<T>(r)
+    );
   },
 
   async upsertRow<T = any>(
@@ -290,6 +316,35 @@ export const repo = {
 
     const table: any = TABLE_MAP[tableName];
     await db.delete(table);
+  },
+
+  async deleteAllExcept(tableName: TableName, keepIds: number[]): Promise<void> {
+    if (!keepIds || keepIds.length === 0) {
+      return this.deleteAll(tableName);
+    }
+    if (isSupabaseRestBackend() && supabaseAdmin) {
+      const { error } = await supabaseAdmin
+        .from(tableName)
+        .delete()
+        .not('id', 'in', `(${keepIds.join(',')})`);
+      if (error) throw new Error(error.message);
+      return;
+    }
+
+    const table: any = TABLE_MAP[tableName];
+    const all = (await db.select({ id: table.id }).from(table)) as Array<{ id: number }>;
+    const toDelete = all.map((r) => r.id).filter((id) => !keepIds.includes(id));
+    if (toDelete.length > 0) {
+      await db.delete(table).where(inArray(table.id, toDelete));
+    }
+  },
+
+  async runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (isSupabaseRestBackend() && supabaseAdmin) {
+      // Supabase REST does not expose cross-request SQL transactions; callers handle snapshot/rollback
+      return fn();
+    }
+    return db.transaction(async () => fn());
   },
 
   async adjustNumericColumn(

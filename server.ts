@@ -13,13 +13,17 @@ import { openApiSpec } from './src/server/swagger.ts';
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Always serve generated product images cleanly in both dev and production
+// Always serve generated product images and local upload fallback cleanly in both dev and production
 app.use(
   '/src/assets/images',
   express.static(path.join(process.cwd(), 'src', 'assets', 'images'))
+);
+app.use(
+  '/uploads',
+  express.static(path.join(process.cwd(), 'public', 'uploads'))
 );
 
 // Always serve self-hosted Swagger UI static assets cleanly in both dev and production
@@ -125,7 +129,7 @@ app.get(['/api-docs', '/api-docs/'], (_req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
-    app: 'Nova Aurora Store Test Lab',
+    app: 'Nova Aurora Store',
     databaseMode: getActiveDatabaseMode(),
     supabase: getSupabaseStatus(),
   });
@@ -154,7 +158,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Nova Aurora Store Test Lab rodando na porta ${PORT}`);
+    console.log(`Nova Aurora Store rodando na porta ${PORT}`);
   });
 }
 

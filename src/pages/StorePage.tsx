@@ -32,6 +32,7 @@ import {
   maskCPF,
   maskPhone,
 } from '../utils/validators';
+import { formatDateTimeBR } from '../utils/date';
 
 type StoreTab = 'vitrine' | 'pedidos' | 'favoritos' | 'conta';
 
@@ -43,6 +44,16 @@ export const StorePage: React.FC = () => {
     const t = p.get('tab') as StoreTab | null;
     return t || 'vitrine';
   });
+
+  useEffect(() => {
+    const tabTitleMap: Record<StoreTab, string> = {
+      vitrine: 'Vitrine | Nova Aurora Store',
+      pedidos: 'Meus Pedidos | Nova Aurora Store',
+      favoritos: 'Favoritos | Nova Aurora Store',
+      conta: 'Minha Conta | Nova Aurora Store',
+    };
+    document.title = tabTitleMap[tab] || 'Vitrine | Nova Aurora Store';
+  }, [tab]);
 
   // Banner
   const [showPromoBanner, setShowPromoBanner] = useState(true);
@@ -553,7 +564,7 @@ export const StorePage: React.FC = () => {
                   Design funcional para foco, áudio e produtividade.
                 </h1>
                 <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 max-w-lg">
-                  Explore o catálogo completo do Nova Aurora Store Test Lab para testar busca, filtros, cupons e fluxo completo de checkout.
+                  Explore o catálogo completo da Nova Aurora Store para testar busca, filtros, cupons e fluxo completo de checkout.
                 </p>
                 <div className="flex flex-wrap gap-3 pt-1">
                   <a
@@ -568,7 +579,7 @@ export const StorePage: React.FC = () => {
               <div className="lg:col-span-6 min-h-[240px] lg:min-h-[340px]">
                 <ProductImage
                   src="/src/assets/images/hero_nova_aurora_1794559983148.jpg"
-                  alt="Estação de trabalho Nova Aurora"
+                  alt="Estação de trabalho Nova Aurora Store"
                   className="w-full h-full object-cover"
                 />
               </div>
@@ -830,7 +841,7 @@ export const StorePage: React.FC = () => {
                         <div className="space-y-0.5">
                           <p className="font-mono font-bold text-sm">{o.orderNumber}</p>
                           <p className="text-xs text-slate-500">
-                            {new Date(o.createdAt).toLocaleDateString('pt-BR')} · {o.paymentMethod}
+                            {formatDateTimeBR(o.createdAt)} · {o.paymentMethod}
                           </p>
                         </div>
                         <div className="flex items-center gap-4">
@@ -1221,9 +1232,14 @@ export const StorePage: React.FC = () => {
                   <div className="space-y-3">
                     {detailModal.reviews.map((r) => (
                       <div key={r.id} className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs space-y-1">
-                        <div className="flex justify-between font-semibold">
+                        <div className="flex items-center justify-between gap-2 font-semibold">
                           <span>{r.userName}</span>
-                          <span className="text-amber-500">{'★'.repeat(r.rating)}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-normal text-[11px] text-slate-400">
+                              {formatDateTimeBR(r.createdAt)}
+                            </span>
+                            <span className="text-amber-500">{'★'.repeat(r.rating)}</span>
+                          </div>
                         </div>
                         <p className="text-slate-600 dark:text-slate-300">{r.comment}</p>
                       </div>
@@ -1665,7 +1681,7 @@ export const StorePage: React.FC = () => {
                         <div className="p-4 rounded-xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-xs space-y-1">
                           <p className="font-bold">Aprovação imediata via PIX de laboratório</p>
                           <p className="font-mono text-slate-500">
-                            Chave: pix-lab@novaaurora.test
+                            Chave: pix-lab@novaaurorastore.test
                           </p>
                         </div>
                       )}

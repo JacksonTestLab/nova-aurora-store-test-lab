@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -23,10 +23,21 @@ import {
   Loader2,
   AlertCircle,
   Eye,
+  Upload,
+  HardDriveUpload,
+  ShieldAlert,
+  FileJson,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PaginationBar } from '../components/PaginationBar';
+import { ProductImage } from '../components/ProductImage';
+import {
+  formatBackupFilename,
+  formatDateBR,
+  formatDateTimeBR,
+  getLocalDateYMD,
+} from '../utils/date';
 import {
   formatBRL,
   isValidCPF,
@@ -48,18 +59,21 @@ type AdminTab =
   | 'anexos'
   | 'laboratorio';
 
-const PRESET_IMAGES = [
-  { label: 'Fone Studio ANC', url: '/src/assets/images/prod_headphones_1794559983453.jpg' },
-  { label: 'Teclado Mecânico K75', url: '/src/assets/images/prod_keyboard_1794559984255.jpg' },
-  { label: 'Luminária Brass Duo', url: '/src/assets/images/prod_lamp_1794559984201.jpg' },
-  { label: 'Mochila Commuter', url: '/src/assets/images/prod_backpack_1794559985752.jpg' },
-  { label: 'Smartwatch Titânio', url: '/src/assets/images/prod_watch_1794559985676.jpg' },
-  { label: 'Chaleira Precision', url: '/src/assets/images/prod_kettle_1794559986475.jpg' },
-  { label: 'Caixa Acústica Aura', url: '/src/assets/images/prod_speaker_1794559986397.jpg' },
-];
+const ADMIN_TAB_TITLES: Record<AdminTab, string> = {
+  dashboard: 'Dashboard | Nova Aurora Store',
+  usuarios: 'Usuários | Nova Aurora Store',
+  clientes: 'Clientes | Nova Aurora Store',
+  produtos: 'Produtos | Nova Aurora Store',
+  'categorias-cupons': 'Categorias & Cupons | Nova Aurora Store',
+  pedidos: 'Pedidos | Nova Aurora Store',
+  financeiro: 'Financeiro | Nova Aurora Store',
+  anexos: 'Anexos | Nova Aurora Store',
+  laboratorio: 'Laboratório QA | Nova Aurora Store',
+};
 
 export const AdminPage: React.FC = () => {
-  const { apiFetch, addToast, config, refreshConfig } = useApp();
+  const { user, apiFetch, addToast, config, refreshConfig, refreshUser } = useApp();
+  const isSuperAdmin = user?.role === 'superadmin';
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const params = new URLSearchParams(window.location.search);
     const t = params.get('tab') as AdminTab | null;
@@ -85,11 +99,20 @@ export const AdminPage: React.FC = () => {
   const [financialList, setFinancialList] = useState<any[]>([]);
   const [attachmentsList, setAttachmentsList] = useState<any[]>([]);
   const [auditLogsList, setAuditLogsList] = useState<any[]>([]);
+  const [backupsList, setBackupsList] = useState<any[]>([]);
 
-  // Lab settings
+  // Lab settings & Backup/Restore state
   const [delayMs, setDelayMs] = useState(String(config.simulatedDelayMs || 0));
   const [maxDiscount, setMaxDiscount] = useState(String(config.maxCashierDiscountPercent || 15));
   const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [labSuccessMessage, setLabSuccessMessage] = useState('');
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupError, setBackupError] = useState('');
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [restorePendingPayload, setRestorePendingPayload] = useState<any | null>(null);
+  const [restoreMetadata, setRestoreMetadata] = useState<any | null>(null);
+  const [restoreConfirmText, setRestoreConfirmText] = useState('');
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
 
   // Filters & Pagination
   const [custSearch, setCustSearch] = useState('');
@@ -149,9 +172,13 @@ export const AdminPage: React.FC = () => {
     priceReais: '',
     stock: '0',
     minStock: '5',
-    imageUrl: PRESET_IMAGES[0].url,
+    imageUrl: '',
     status: 'ativo',
   });
+  const [prodImageUploading, setProdImageUploading] = useState(false);
+  const [prodImageError, setProdImageError] = useState('');
+  const [prodImageDragging, setProdImageDragging] = useState(false);
+  const prodImageInputRef = useRef<HTMLInputElement>(null);
 
   const [catModal, setCatModal] = useState<{ open: boolean; editing: any | null }>({ open: false, editing: null });
   const [catForm, setCatForm] = useState({ name: '', description: '', status: 'ativo' });
@@ -161,7 +188,7 @@ export const AdminPage: React.FC = () => {
     code: '',
     type: 'percentual',
     value: '10',
-    expiresAt: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+    expiresAt: getLocalDateYMD(new Date(Date.now() + 30 * 86400000)),
     usageLimit: '100',
   });
 
@@ -179,7 +206,7 @@ export const AdminPage: React.FC = () => {
     type: 'pagar',
     description: '',
     amountReais: '',
-    dueDate: new Date().toISOString().slice(0, 10),
+    dueDate: getLocalDateYMD(new Date()),
   });
 
   const [deleteTarget, setDeleteTarget] = useState<{ type: string; id: number; label: string } | null>(null);
@@ -248,11 +275,13 @@ export const AdminPage: React.FC = () => {
           const data = await apiFetch('/api/admin/attachments');
           setAttachmentsList(data.attachments);
         } else if (tab === 'laboratorio') {
-          const [logsData] = await Promise.all([
+          const [logsData, backupsData] = await Promise.all([
             apiFetch('/api/admin/audit-logs'),
+            apiFetch('/api/admin/backups'),
             refreshConfig(),
           ]);
           setAuditLogsList(logsData.logs);
+          setBackupsList(backupsData.backups || []);
         }
       } catch (err: any) {
         setLoadError(err.message || 'Falha ao carregar dados.');
@@ -283,6 +312,7 @@ export const AdminPage: React.FC = () => {
   );
 
   useEffect(() => {
+    document.title = ADMIN_TAB_TITLES[activeTab] || 'Dashboard | Nova Aurora Store';
     fetchTabData(activeTab);
   }, [activeTab, fetchTabData]);
 
@@ -406,6 +436,47 @@ export const AdminPage: React.FC = () => {
     }
   };
 
+  const handleProductImageFile = async (file: File | null) => {
+    setProdImageError('');
+    if (!file) return;
+
+    const allowedMimes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+    const allowedExt = /\.(jpe?g|png|webp)$/i;
+    if (!allowedMimes.has(file.type) && !allowedExt.test(file.name)) {
+      setProdImageError('Formato inválido. Envie apenas imagens JPG, PNG ou WEBP.');
+      return;
+    }
+    if (file.type && !allowedMimes.has(file.type)) {
+      setProdImageError('Formato inválido. Envie apenas imagens JPG, PNG ou WEBP.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setProdImageError('A imagem excede o tamanho máximo permitido de 2 MB.');
+      return;
+    }
+
+    setProdImageUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const data = await apiFetch<{ imageUrl: string }>('/api/admin/products/upload-image', {
+        method: 'POST',
+        body: formData,
+      });
+      setProdForm((prev) => ({ ...prev, imageUrl: data.imageUrl }));
+      addToast('success', 'Foto do produto enviada com sucesso.');
+    } catch (err: any) {
+      const msg = err.message || 'Erro ao enviar foto do produto.';
+      setProdImageError(msg);
+      addToast('error', msg);
+    } finally {
+      setProdImageUploading(false);
+      if (prodImageInputRef.current) {
+        prodImageInputRef.current.value = '';
+      }
+    }
+  };
+
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     const errs: Record<string, string> = {};
@@ -433,7 +504,7 @@ export const AdminPage: React.FC = () => {
         priceCents,
         stock,
         minStock: Number(prodForm.minStock || 5),
-        imageUrl: prodForm.imageUrl,
+        imageUrl: prodForm.imageUrl ? prodForm.imageUrl : null,
         status: prodForm.status,
       };
       if (prodModal.editing) {
@@ -562,7 +633,7 @@ export const AdminPage: React.FC = () => {
       });
       addToast('success', 'Lançamento financeiro criado.');
       setFinModal(false);
-      setFinForm({ type: 'pagar', description: '', amountReais: '', dueDate: new Date().toISOString().slice(0, 10) });
+      setFinForm({ type: 'pagar', description: '', amountReais: '', dueDate: getLocalDateYMD(new Date()) });
       fetchTabData('financeiro');
     } catch (err: any) {
       addToast('error', err.message);
@@ -665,15 +736,140 @@ export const AdminPage: React.FC = () => {
 
   const handleResetDemo = async () => {
     setSaving(true);
+    setLabSuccessMessage('');
     try {
-      await apiFetch('/api/admin/reset-demo', { method: 'POST' });
-      addToast('success', 'Dados de demonstração restaurados ao estado inicial.');
+      const data = await apiFetch<{ message?: string }>('/api/admin/reset-demo', { method: 'POST' });
+      await Promise.all([refreshUser(), refreshConfig()]);
+      const successText = data.message || 'Dados de demonstração restaurados ao estado inicial.';
+      setLabSuccessMessage(successText);
+      addToast('success', successText);
       setResetModalOpen(false);
-      fetchTabData(activeTab);
+      fetchTabData('laboratorio');
     } catch (err: any) {
       addToast('error', err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleExportBackup = async () => {
+    setBackupError('');
+    setLabSuccessMessage('');
+    setBackupLoading(true);
+    try {
+      const data = await apiFetch<{ filename: string; payload: any; historyEntry: any }>(
+        '/api/admin/backups/export',
+        { method: 'POST' }
+      );
+      const clientFilename = formatBackupFilename(
+        new Date(data.payload?.metadata?.generatedAt || Date.now())
+      );
+      const jsonBlob = new Blob([JSON.stringify(data.payload, null, 2)], {
+        type: 'application/json;charset=utf-8',
+      });
+      const url = URL.createObjectURL(jsonBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = clientFilename || data.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      const msg = `Backup gerado e baixado: ${clientFilename || data.filename}`;
+      setLabSuccessMessage(msg);
+      addToast('success', msg);
+      fetchTabData('laboratorio');
+    } catch (err: any) {
+      const msg = err.message || 'Erro ao gerar backup.';
+      setBackupError(msg);
+      addToast('error', msg);
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const handleSelectBackupFile = async (file: File | null) => {
+    setBackupError('');
+    setLabSuccessMessage('');
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.json')) {
+      const msg = 'Formato inválido. Selecione um arquivo de backup com extensão .json.';
+      setBackupError(msg);
+      addToast('error', msg);
+      if (backupFileInputRef.current) backupFileInputRef.current.value = '';
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      const msg = 'Arquivo de backup excede o limite máximo de 10 MB.';
+      setBackupError(msg);
+      addToast('error', msg);
+      if (backupFileInputRef.current) backupFileInputRef.current.value = '';
+      return;
+    }
+
+    setBackupLoading(true);
+    try {
+      const rawText = await file.text();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        throw new Error('Arquivo JSON inválido ou malformado.');
+      }
+
+      const validation = await apiFetch<{ valid: boolean; metadata: any; counts: any; error?: string }>(
+        '/api/admin/backups/validate',
+        {
+          method: 'POST',
+          body: JSON.stringify({ payload: parsed, rawSizeBytes: file.size }),
+        }
+      );
+
+      setRestorePendingPayload(parsed);
+      setRestoreMetadata(validation.metadata);
+      setRestoreConfirmText('');
+      setRestoreModalOpen(true);
+    } catch (err: any) {
+      const msg = err.message || 'Arquivo de backup inválido.';
+      setBackupError(msg);
+      addToast('error', msg);
+    } finally {
+      setBackupLoading(false);
+      if (backupFileInputRef.current) backupFileInputRef.current.value = '';
+    }
+  };
+
+  const handleConfirmRestoreBackup = async () => {
+    if (!restorePendingPayload || restoreConfirmText.trim() !== 'RESTAURAR') return;
+    setBackupLoading(true);
+    setBackupError('');
+    try {
+      const res = await apiFetch<{ message?: string }>('/api/admin/backups/restore', {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmationText: restoreConfirmText.trim(),
+          payload: restorePendingPayload,
+        }),
+      });
+      await Promise.all([refreshUser(), refreshConfig()]);
+      const msg =
+        res.message ||
+        'Backup restaurado com sucesso. Um backup automático de segurança foi salvo antes da operação.';
+      setLabSuccessMessage(msg);
+      addToast('success', msg);
+      setRestoreModalOpen(false);
+      setRestorePendingPayload(null);
+      setRestoreMetadata(null);
+      setRestoreConfirmText('');
+      fetchTabData('laboratorio');
+    } catch (err: any) {
+      const msg = err.message || 'Erro ao restaurar backup.';
+      setBackupError(msg);
+      addToast('error', msg);
+    } finally {
+      setBackupLoading(false);
     }
   };
 
@@ -941,7 +1137,7 @@ export const AdminPage: React.FC = () => {
                     {dashboard.revenueByDay.map((d: any) => (
                       <div key={d.date} className="flex items-center justify-between gap-4 text-xs border-b border-slate-100 dark:border-slate-800 pb-2">
                         <span className="font-mono text-slate-600 dark:text-slate-400">
-                          {d.date}
+                          {formatDateBR(d.date)}
                         </span>
                         <div className="flex items-center gap-4 tabular-nums">
                           <span className="text-indigo-600 dark:text-indigo-400 font-semibold">
@@ -1259,6 +1455,7 @@ export const AdminPage: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setFormErrors({});
+                  setProdImageError('');
                   setProdForm({
                     code: '',
                     name: '',
@@ -1268,7 +1465,7 @@ export const AdminPage: React.FC = () => {
                     priceReais: '',
                     stock: '10',
                     minStock: '5',
-                    imageUrl: PRESET_IMAGES[0].url,
+                    imageUrl: '',
                     status: 'ativo',
                   });
                   setProdModal({ open: true, editing: null });
@@ -1285,6 +1482,7 @@ export const AdminPage: React.FC = () => {
               <table data-testid="products-table" className="w-full text-sm text-left">
                 <thead className="bg-slate-50 dark:bg-slate-800/70 text-xs text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800">
                   <tr>
+                    <th className="px-4 py-3 font-semibold">Foto</th>
                     <th className="px-4 py-3 font-semibold">Código</th>
                     <th className="px-4 py-3 font-semibold">Produto</th>
                     <th className="px-4 py-3 font-semibold">Categoria</th>
@@ -1296,13 +1494,18 @@ export const AdminPage: React.FC = () => {
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                   {pagedProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-10 text-center text-slate-500">
+                      <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
                         Nenhum produto encontrado.
                       </td>
                     </tr>
                   ) : (
                     pagedProducts.map((p) => (
                       <tr key={p.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
+                        <td className="px-4 py-2.5">
+                          <div className="w-11 h-11 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shrink-0">
+                            <ProductImage src={p.imageUrl} alt={p.name} />
+                          </div>
+                        </td>
                         <td className="px-4 py-3 font-mono text-xs font-semibold">{p.code}</td>
                         <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{p.name}</td>
                         <td className="px-4 py-3 text-xs text-slate-500">{p.categoryName}</td>
@@ -1328,6 +1531,7 @@ export const AdminPage: React.FC = () => {
                               type="button"
                               onClick={() => {
                                 setFormErrors({});
+                                setProdImageError('');
                                 setProdForm({
                                   code: p.code,
                                   name: p.name,
@@ -1337,7 +1541,7 @@ export const AdminPage: React.FC = () => {
                                   priceReais: (p.priceCents / 100).toFixed(2),
                                   stock: String(p.stock),
                                   minStock: String(p.minStock),
-                                  imageUrl: p.imageUrl || PRESET_IMAGES[0].url,
+                                  imageUrl: p.imageUrl || '',
                                   status: p.status,
                                 });
                                 setProdModal({ open: true, editing: p });
@@ -1481,7 +1685,7 @@ export const AdminPage: React.FC = () => {
                           {cp.usedCount}/{cp.usageLimit}
                         </td>
                         <td className="px-4 py-3 text-xs font-mono">
-                          {new Date(cp.expiresAt).toLocaleDateString('pt-BR')}
+                          {formatDateBR(cp.expiresAt)}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <button
@@ -1549,6 +1753,7 @@ export const AdminPage: React.FC = () => {
                 <thead className="bg-slate-50 dark:bg-slate-800/70 text-xs border-b border-slate-200 dark:border-slate-800">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Pedido</th>
+                    <th className="px-4 py-3 font-semibold">Data/Hora</th>
                     <th className="px-4 py-3 font-semibold">Canal</th>
                     <th className="px-4 py-3 font-semibold">Cliente</th>
                     <th className="px-4 py-3 font-semibold">Pagamento</th>
@@ -1560,7 +1765,7 @@ export const AdminPage: React.FC = () => {
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                   {ordersList.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
+                      <td colSpan={8} className="px-4 py-10 text-center text-slate-500">
                         Nenhum pedido encontrado para os filtros aplicados.
                       </td>
                     </tr>
@@ -1568,6 +1773,9 @@ export const AdminPage: React.FC = () => {
                     ordersList.map((o) => (
                       <tr key={o.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
                         <td className="px-4 py-3 font-mono font-semibold text-xs">{o.orderNumber}</td>
+                        <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">
+                          {formatDateTimeBR(o.createdAt)}
+                        </td>
                         <td className="px-4 py-3 uppercase text-xs font-medium">{o.channel}</td>
                         <td className="px-4 py-3">{o.customerName || 'Consumidor'}</td>
                         <td className="px-4 py-3 text-xs">{o.paymentMethod}</td>
@@ -1702,7 +1910,7 @@ export const AdminPage: React.FC = () => {
                         {f.type === 'pagar' ? 'A Pagar' : 'A Receber'}
                       </td>
                       <td className="px-4 py-3">{f.description}</td>
-                      <td className="px-4 py-3 font-mono text-xs">{f.dueDate}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{formatDateBR(f.dueDate)}</td>
                       <td className="px-4 py-3 text-right font-mono tabular-nums font-semibold">
                         {formatBRL(f.amountCents)}
                       </td>
@@ -1798,6 +2006,7 @@ export const AdminPage: React.FC = () => {
                       <th className="px-4 py-3">Arquivo</th>
                       <th className="px-4 py-3">Tipo</th>
                       <th className="px-4 py-3">Tamanho</th>
+                      <th className="px-4 py-3">Enviado em</th>
                       <th className="px-4 py-3">Enviado por</th>
                       <th className="px-4 py-3 text-right">Ações</th>
                     </tr>
@@ -1805,7 +2014,7 @@ export const AdminPage: React.FC = () => {
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                     {attachmentsList.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-4 py-10 text-center text-slate-500">
+                        <td colSpan={6} className="px-4 py-10 text-center text-slate-500">
                           Nenhum anexo enviado ainda.
                         </td>
                       </tr>
@@ -1816,6 +2025,9 @@ export const AdminPage: React.FC = () => {
                           <td className="px-4 py-3 font-mono text-xs">{att.mimeType}</td>
                           <td className="px-4 py-3 font-mono text-xs tabular-nums">
                             {(att.sizeBytes / 1024).toFixed(1)} KB
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">
+                            {formatDateTimeBR(att.createdAt)}
                           </td>
                           <td className="px-4 py-3 text-xs">{att.uploadedBy}</td>
                           <td className="px-4 py-3 text-right">
@@ -1854,6 +2066,27 @@ export const AdminPage: React.FC = () => {
         {/* 9. LABORATÓRIO QA */}
         {activeTab === 'laboratorio' && (
           <div className="space-y-6">
+            {labSuccessMessage && (
+              <div
+                role="status"
+                data-testid="success-message"
+                className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-sm flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-2.5">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span>{labSuccessMessage}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLabSuccessMessage('')}
+                  className="p-1 rounded hover:bg-emerald-100 dark:hover:bg-emerald-900"
+                  aria-label="Fechar mensagem"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
                 <h2 className="text-base font-bold text-slate-900 dark:text-white">
@@ -1862,15 +2095,25 @@ export const AdminPage: React.FC = () => {
                 <p className="text-sm text-slate-600 dark:text-slate-400">
                   Recria o banco de dados PostgreSQL para o estado inicial de fábrica (3 contas padrão, produtos, pedidos e financeiro) para repetir baterias de testes sem interferências.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setResetModalOpen(true)}
-                  data-testid="reset-demo-button"
-                  className="min-h-[44px] px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold inline-flex items-center gap-2"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>Restaurar dados de demonstração</span>
-                </button>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    disabled={!isSuperAdmin || saving}
+                    onClick={() => setResetModalOpen(true)}
+                    title={!isSuperAdmin ? 'Ação disponível apenas para o Super Admin' : undefined}
+                    data-testid="reset-demo-button"
+                    className="min-h-[44px] px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-sm font-semibold inline-flex items-center gap-2 transition-colors"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Restaurar dados de demonstração</span>
+                  </button>
+                  {!isSuperAdmin && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                      <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                      <span>Ação disponível apenas para o Super Admin</span>
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
@@ -1923,6 +2166,134 @@ export const AdminPage: React.FC = () => {
               </div>
             </div>
 
+            {/* Backup & Restore (.json) */}
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-1 max-w-2xl">
+                  <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <FileJson className="w-5 h-5 text-indigo-600 dark:text-teal-400" />
+                    <span>Backup e Restauração do Sistema (.json)</span>
+                  </h2>
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+                    Exporte todas as entidades da loja (usuários, produtos com URL das fotos, categorias, cupons, pedidos, financeiro e anexos) com verificação SHA-256 ou restaure um arquivo .json com backup automático de segurança.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    disabled={!isSuperAdmin || backupLoading}
+                    onClick={handleExportBackup}
+                    title={!isSuperAdmin ? 'Ação disponível apenas para o Super Admin' : undefined}
+                    data-testid="backup-create-button"
+                    className="min-h-[44px] px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs sm:text-sm font-semibold inline-flex items-center gap-2 transition-colors"
+                  >
+                    {backupLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                    <span>Gerar backup</span>
+                  </button>
+
+                  <div className="relative inline-flex">
+                    <button
+                      type="button"
+                      disabled={!isSuperAdmin || backupLoading}
+                      onClick={() => backupFileInputRef.current?.click()}
+                      title={!isSuperAdmin ? 'Ação disponível apenas para o Super Admin' : undefined}
+                      data-testid="backup-restore-button"
+                      className="min-h-[44px] px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold inline-flex items-center gap-2 transition-colors"
+                    >
+                      <HardDriveUpload className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      <span>Restaurar backup</span>
+                    </button>
+                    <input
+                      ref={backupFileInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      disabled={!isSuperAdmin || backupLoading}
+                      onChange={(e) => handleSelectBackupFile(e.target.files?.[0] || null)}
+                      data-testid="backup-file-input"
+                      title={!isSuperAdmin ? 'Ação disponível apenas para o Super Admin' : 'Selecionar arquivo .json de backup'}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {!isSuperAdmin && (
+                <p className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                  <span>Ação disponível apenas para o Super Admin</span>
+                </p>
+              )}
+
+              {backupError && (
+                <div
+                  role="alert"
+                  data-testid="backup-error-message"
+                  className="p-3 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs flex items-center gap-2"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{backupError}</span>
+                </div>
+              )}
+
+              <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                    Backups Recentes
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Exibindo no fuso horário do dispositivo
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table data-testid="backups-history-table" className="w-full text-xs text-left">
+                    <thead className="bg-slate-50/70 dark:bg-slate-800/40 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800">
+                      <tr>
+                        <th className="px-4 py-2.5">Arquivo</th>
+                        <th className="px-4 py-2.5">Data/Hora</th>
+                        <th className="px-4 py-2.5">Origem</th>
+                        <th className="px-4 py-2.5">Gerado por</th>
+                        <th className="px-4 py-2.5 text-right">Tamanho</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                      {backupsList.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-6 text-center text-slate-500">
+                            Nenhum backup registrado ainda.
+                          </td>
+                        </tr>
+                      ) : (
+                        backupsList.map((b) => (
+                          <tr key={b.id}>
+                            <td className="px-4 py-2.5 font-mono font-semibold text-slate-800 dark:text-slate-200">
+                              {b.filename}
+                            </td>
+                            <td className="px-4 py-2.5 font-mono whitespace-nowrap">
+                              {formatDateTimeBR(b.createdAt)}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              {b.kind === 'safety' ? 'Segurança (pré-restauração)' : 'Manual'}
+                            </td>
+                            <td className="px-4 py-2.5 font-mono">{b.generatedBy}</td>
+                            <td className="px-4 py-2.5 text-right font-mono tabular-nums">
+                              {b.sizeBytes >= 1024 * 1024
+                                ? `${(b.sizeBytes / (1024 * 1024)).toFixed(2)} MB`
+                                : `${(b.sizeBytes / 1024).toFixed(1)} KB`}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
               <div className="p-4 border-b border-slate-200 dark:border-slate-800">
                 <h2 className="text-base font-bold">Log de Auditoria (Últimas 100 ações)</h2>
@@ -1941,7 +2312,7 @@ export const AdminPage: React.FC = () => {
                     {auditLogsList.map((log) => (
                       <tr key={log.id}>
                         <td className="px-4 py-2.5 font-mono whitespace-nowrap">
-                          {new Date(log.createdAt).toLocaleString('pt-BR')}
+                          {formatDateTimeBR(log.createdAt)}
                         </td>
                         <td className="px-4 py-2.5 font-mono">{log.actorEmail}</td>
                         <td className="px-4 py-2.5 font-semibold">{log.action}</td>
@@ -2354,20 +2725,126 @@ export const AdminPage: React.FC = () => {
                   />
                   {formErrors.stock && <p className="text-xs text-red-600 mt-1">{formErrors.stock}</p>}
                 </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1">Imagem do catálogo</label>
-                  <select
-                    value={prodForm.imageUrl}
-                    onChange={(e) => setProdForm({ ...prodForm, imageUrl: e.target.value })}
-                    data-testid="product-image-select"
-                    className="w-full min-h-[42px] px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-                  >
-                    {PRESET_IMAGES.map((img) => (
-                      <option key={img.url} value={img.url}>
-                        {img.label}
-                      </option>
-                    ))}
-                  </select>
+                <div className="sm:col-span-2 space-y-2">
+                  <label htmlFor="product-image-input" className="block text-xs font-medium">
+                    Foto do produto
+                  </label>
+
+                  {prodForm.imageUrl ? (
+                    <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 flex flex-wrap items-center gap-4">
+                      <div
+                        data-testid="product-image-preview"
+                        className="w-24 h-24 rounded-lg overflow-hidden bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shrink-0"
+                      >
+                        <ProductImage
+                          src={prodForm.imageUrl}
+                          alt={prodForm.name || 'Pré-visualização do produto'}
+                        />
+                      </div>
+                      <div className="flex-1 min-w-[180px] space-y-2">
+                        <p className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          Foto selecionada para o produto
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="relative inline-flex">
+                            <button
+                              type="button"
+                              disabled={prodImageUploading}
+                              onClick={() => prodImageInputRef.current?.click()}
+                              className="min-h-[38px] px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold inline-flex items-center gap-1.5"
+                            >
+                              {prodImageUploading ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Upload className="w-3.5 h-3.5" />
+                              )}
+                              <span>{prodImageUploading ? 'Enviando...' : 'Trocar foto'}</span>
+                            </button>
+                            <input
+                              ref={prodImageInputRef}
+                              id="product-image-input"
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                              disabled={prodImageUploading}
+                              onChange={(e) => handleProductImageFile(e.target.files?.[0] || null)}
+                              data-testid="product-image-input"
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={prodImageUploading}
+                            onClick={() => {
+                              setProdImageError('');
+                              setProdForm((prev) => ({ ...prev, imageUrl: '' }));
+                              if (prodImageInputRef.current) prodImageInputRef.current.value = '';
+                            }}
+                            data-testid="product-image-remove-button"
+                            className="min-h-[38px] px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 text-xs font-semibold inline-flex items-center gap-1.5"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Remover foto</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setProdImageDragging(true);
+                      }}
+                      onDragLeave={() => setProdImageDragging(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setProdImageDragging(false);
+                        const file = e.dataTransfer.files?.[0] || null;
+                        handleProductImageFile(file);
+                      }}
+                      className={`relative rounded-xl border-2 border-dashed p-4 text-center transition-colors ${
+                        prodImageDragging
+                          ? 'border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/30'
+                          : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:border-indigo-400'
+                      }`}
+                    >
+                      <input
+                        ref={prodImageInputRef}
+                        id="product-image-input"
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                        disabled={prodImageUploading}
+                        onChange={(e) => handleProductImageFile(e.target.files?.[0] || null)}
+                        data-testid="product-image-input"
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                      <div className="flex flex-col items-center gap-1.5 pointer-events-none">
+                        {prodImageUploading ? (
+                          <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
+                        ) : (
+                          <Upload className="w-6 h-6 text-indigo-600 dark:text-teal-400" />
+                        )}
+                        <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                          {prodImageUploading
+                            ? 'Enviando foto para o armazenamento...'
+                            : 'Arraste e solte a foto aqui ou clique para escolher'}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          JPG, PNG ou WEBP · Máximo 2 MB · Computador, galeria ou câmera (se não enviar, usa imagem padrão)
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {prodImageError && (
+                    <p
+                      role="alert"
+                      data-testid="product-image-error"
+                      className="text-xs font-medium text-red-600 dark:text-red-400"
+                    >
+                      {prodImageError}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -2381,11 +2858,11 @@ export const AdminPage: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={saving}
+                disabled={saving || prodImageUploading}
                 data-testid="save-button"
-                className="min-h-[42px] px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold"
+                className="min-h-[42px] px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50"
               >
-                {saving ? 'Salvando...' : 'Salvar'}
+                {saving ? 'Salvando...' : prodImageUploading ? 'Enviando foto...' : 'Salvar'}
               </button>
             </div>
           </form>
@@ -2612,10 +3089,14 @@ export const AdminPage: React.FC = () => {
               </button>
             </div>
             <div className="text-xs space-y-1 text-slate-600 dark:text-slate-300">
+              <p><strong>Data/Hora:</strong> {formatDateTimeBR(orderDetailModal.createdAt)}</p>
               <p><strong>Canal:</strong> {orderDetailModal.channel.toUpperCase()}</p>
               <p><strong>Cliente:</strong> {orderDetailModal.customerName} ({orderDetailModal.customerCpf || 'Sem CPF'})</p>
               <p><strong>Status:</strong> {orderDetailModal.status}</p>
               <p><strong>Pagamento:</strong> {orderDetailModal.paymentMethod}</p>
+              {orderDetailModal.deliveredAt && (
+                <p><strong>Entregue em:</strong> {formatDateTimeBR(orderDetailModal.deliveredAt)}</p>
+              )}
               {orderDetailModal.cancellationReason && (
                 <p className="text-red-600"><strong>Motivo cancelamento:</strong> {orderDetailModal.cancellationReason}</p>
               )}
@@ -2730,7 +3211,7 @@ export const AdminPage: React.FC = () => {
       <ConfirmModal
         open={resetModalOpen}
         title="Restaurar dados de demonstração"
-        description="Todos os registros atuais (usuários extras, produtos, pedidos e lançamentos) serão substituídos pelo conjunto inicial de laboratório."
+        description="Atenção: todos os registros atuais (usuários extras, clientes, produtos, categorias, cupons, pedidos, caixa e lançamentos financeiros) serão substituídos pelo conjunto inicial de demonstração. Sua sessão ativa será preservada."
         confirmLabel="Restaurar agora"
         danger
         loading={saving}
@@ -2738,6 +3219,107 @@ export const AdminPage: React.FC = () => {
         onConfirm={handleResetDemo}
         onCancel={() => setResetModalOpen(false)}
       />
+
+      {/* Restore Backup Confirmation Modal */}
+      {restoreModalOpen && restoreMetadata && (
+        <div
+          data-testid="backup-restore-modal"
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60"
+        >
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <HardDriveUpload className="w-5 h-5 text-amber-600" />
+                <span>Confirmar Restauração de Backup</span>
+              </h3>
+              <button
+                type="button"
+                disabled={backupLoading}
+                onClick={() => {
+                  setRestoreModalOpen(false);
+                  setRestorePendingPayload(null);
+                  setRestoreMetadata(null);
+                  setRestoreConfirmText('');
+                }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto text-xs sm:text-sm">
+              <div className="p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-xs space-y-1">
+                <p className="font-bold">Atenção — Operação Destrutiva com Segurança</p>
+                <p>
+                  Os dados atuais da loja serão substituídos pelos registros deste backup. Antes de aplicar, o sistema gerará automaticamente um backup de segurança do estado atual.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
+                <p>
+                  <strong>Data do backup:</strong> {formatDateTimeBR(restoreMetadata.generatedAt)}
+                </p>
+                <p>
+                  <strong>Gerado por:</strong> {restoreMetadata.generatedBy}
+                </p>
+                <p>
+                  <strong>Versão do esquema:</strong> {restoreMetadata.schemaVersion}
+                </p>
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 grid grid-cols-2 gap-1.5 font-mono">
+                  <span>Usuários: {restoreMetadata.counts?.users ?? 0}</span>
+                  <span>Produtos: {restoreMetadata.counts?.products ?? 0}</span>
+                  <span>Categorias: {restoreMetadata.counts?.categories ?? 0}</span>
+                  <span>Cupons: {restoreMetadata.counts?.coupons ?? 0}</span>
+                  <span>Pedidos: {restoreMetadata.counts?.orders ?? 0}</span>
+                  <span>Financeiro: {restoreMetadata.counts?.financial_entries ?? 0}</span>
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="backup-confirm-input" className="block text-xs font-semibold mb-1.5">
+                  Digite <span className="font-mono text-red-600 dark:text-red-400">RESTAURAR</span> para confirmar:
+                </label>
+                <input
+                  id="backup-confirm-input"
+                  type="text"
+                  value={restoreConfirmText}
+                  onChange={(e) => setRestoreConfirmText(e.target.value)}
+                  data-testid="backup-confirm-input"
+                  placeholder="RESTAURAR"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-mono uppercase"
+                />
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2 bg-slate-50 dark:bg-slate-900">
+              <button
+                type="button"
+                disabled={backupLoading}
+                onClick={() => {
+                  setRestoreModalOpen(false);
+                  setRestorePendingPayload(null);
+                  setRestoreMetadata(null);
+                  setRestoreConfirmText('');
+                }}
+                className="min-h-[42px] px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={restoreConfirmText.trim() !== 'RESTAURAR' || backupLoading}
+                onClick={handleConfirmRestoreBackup}
+                data-testid="backup-confirm-button"
+                className="min-h-[42px] px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:bg-slate-300 dark:disabled:bg-slate-800 disabled:text-slate-500 text-white text-sm font-semibold inline-flex items-center gap-2"
+              >
+                {backupLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>{backupLoading ? 'Restaurando...' : 'Confirmar Restauração'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

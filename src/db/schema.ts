@@ -14,7 +14,7 @@ export const users = pgTable('users', {
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash'),
-  role: text('role').notNull().default('cliente'), // 'admin' | 'caixa' | 'cliente'
+  role: text('role').notNull().default('cliente'), // 'superadmin' | 'admin' | 'caixa' | 'cliente'
   cpf: text('cpf').unique(),
   phone: text('phone'),
   birthDate: text('birth_date'),
@@ -28,8 +28,8 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   status: text('status').notNull().default('ativo'), // 'ativo' | 'inativo'
   failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
-  lockedUntil: timestamp('locked_until'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const addresses = pgTable('addresses', {
@@ -46,7 +46,7 @@ export const addresses = pgTable('addresses', {
   city: text('city').notNull(),
   state: text('state').notNull(),
   isDefault: boolean('is_default').notNull().default(false),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const categories = pgTable('categories', {
@@ -55,7 +55,7 @@ export const categories = pgTable('categories', {
   slug: text('slug').notNull().unique(),
   description: text('description'),
   status: text('status').notNull().default('ativo'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const products = pgTable('products', {
@@ -70,7 +70,7 @@ export const products = pgTable('products', {
   minStock: integer('min_stock').notNull().default(5),
   imageUrl: text('image_url'),
   status: text('status').notNull().default('ativo'), // 'ativo' | 'inativo'
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const coupons = pgTable('coupons', {
@@ -82,7 +82,7 @@ export const coupons = pgTable('coupons', {
   usageLimit: integer('usage_limit').notNull().default(100),
   usedCount: integer('used_count').notNull().default(0),
   status: text('status').notNull().default('ativo'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const cashRegisters = pgTable('cash_registers', {
@@ -93,8 +93,8 @@ export const cashRegisters = pgTable('cash_registers', {
   status: text('status').notNull().default('aberto'), // 'aberto' | 'fechado'
   initialAmountCents: integer('initial_amount_cents').notNull(),
   closingAmountCents: integer('closing_amount_cents'),
-  openedAt: timestamp('opened_at').defaultNow().notNull(),
-  closedAt: timestamp('closed_at'),
+  openedAt: timestamp('opened_at', { withTimezone: true }).defaultNow().notNull(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
   notes: text('notes'),
 });
 
@@ -109,7 +109,7 @@ export const cashMovements = pgTable('cash_movements', {
   type: text('type').notNull(), // 'sangria' | 'suprimento'
   amountCents: integer('amount_cents').notNull(),
   reason: text('reason').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const orders = pgTable('orders', {
@@ -134,8 +134,8 @@ export const orders = pgTable('orders', {
   authorizedBy: text('authorized_by'),
   returnStatus: text('return_status').notNull().default('Nenhum'), // 'Nenhum' | 'Solicitado' | 'Aprovado' | 'Recusado'
   returnReason: text('return_reason'),
-  deliveredAt: timestamp('delivered_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const orderItems = pgTable('order_items', {
@@ -162,7 +162,7 @@ export const cartItems = pgTable('cart_items', {
     .references(() => products.id, { onDelete: 'cascade' })
     .notNull(),
   quantity: integer('quantity').notNull().default(1),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const favorites = pgTable('favorites', {
@@ -173,7 +173,7 @@ export const favorites = pgTable('favorites', {
   productId: integer('product_id')
     .references(() => products.id, { onDelete: 'cascade' })
     .notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const reviews = pgTable('reviews', {
@@ -187,7 +187,7 @@ export const reviews = pgTable('reviews', {
   userName: text('user_name').notNull(),
   rating: integer('rating').notNull(),
   comment: text('comment').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const financialEntries = pgTable('financial_entries', {
@@ -199,7 +199,7 @@ export const financialEntries = pgTable('financial_entries', {
   paidDate: text('paid_date'), // YYYY-MM-DD
   status: text('status').notNull().default('Pendente'), // 'Pendente' | 'Pago' | 'Atrasado'
   orderId: integer('order_id').references(() => orders.id),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const attachments = pgTable('attachments', {
@@ -210,7 +210,7 @@ export const attachments = pgTable('attachments', {
   sizeBytes: integer('size_bytes').notNull(),
   fileData: text('file_data').notNull(),
   uploadedBy: text('uploaded_by').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const auditLogs = pgTable('audit_logs', {
@@ -220,13 +220,13 @@ export const auditLogs = pgTable('audit_logs', {
   action: text('action').notNull(),
   entity: text('entity').notNull(),
   details: text('details').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const labSettings = pgTable('lab_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Relations
